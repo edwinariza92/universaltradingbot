@@ -1,0 +1,29 @@
+# ======== DEPENDENCIAS PARA BOT DE TRADING ========
+# API de Binance para trading
+python-binance==1.0.19
+
+# Análisis de datos y manipulación
+pandas==2.1.4
+numpy==1.24.3
+
+# Peticiones HTTP para Telegram
+requests==2.31.0
+
+# Utilidades del sistema
+python-dateutil==2.8.2
+
+# ======== DEPENDENCIAS OPCIONALES ========
+# Para mejor rendimiento (opcional)
+# numba==0.58.1
+
+# Para logging avanzado (opcional)
+# colorama==0.4.6
+
+# ======== NOTAS DE INSTALACIÓN ========
+# Instalar con: pip install -r requirements.txt
+# 
+# Si tienes problemas con python-binance, puedes usar:
+# pip install python-binance --upgrade
+#
+# Para desarrollo, también puedes instalar:
+# pip install jupyter matplotlib seaborn 
