@@ -420,14 +420,14 @@ def notificar_pnl(symbol):
 def ejecutar_bot_trading():
     """Función principal del bot de trading que se ejecuta en un hilo separado"""
     global bot_activo
-    
+
     ultima_posicion_cerrada = True
     datos_ultima_operacion = {}
     hubo_posicion_abierta = False
     tiempo_ultima_apertura = None
 
     # Notificar inicio del bot
-    enviar_telegram(f"🤖 **Bot {symbol} - Estrategia ATOM Adaptada**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n📊 Símbolo: {symbol}\n⏱️ Intervalo: {intervalo}\n🎯 TP: {tp_multiplier}×ATR | 🛑 SL: {sl_multiplier}×ATR\n📈 BB: {bb_length} períodos, {bb_mult}σ\n📊 MA Tendencia: {ma_trend_length} períodos")
+    enviar_telegram(f"🤖 **Bot {symbol} iniciado**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n📊 Símbolo: {symbol}\n⏱️ Intervalo: {intervalo}")
     log_consola("Bot de trading iniciado")
 
     while bot_activo:
@@ -438,9 +438,6 @@ def ejecutar_bot_trading():
                 log_consola("⏳ Esperando más datos...")
                 time.sleep(60)
                 continue
-
-            senal = calcular_senal(df)
-            log_consola(f"Señal detectada: {senal.upper()}")
 
             info_pos = client.futures_position_information(symbol=symbol)
             if not info_pos:
@@ -453,6 +450,72 @@ def ejecutar_bot_trading():
                     log_consola(f"Posición actual: cantidad={posicion['positionAmt']}, precio entrada={posicion['entryPrice']}, PnL={posicion['unRealizedProfit']}")
                 else:
                     log_consola("Sin posición abierta.")
+
+            # --- 1. PROCESAR CIERRE SI HAY UNO PENDIENTE ---
+            tiempo_actual = time.time()
+            if (pos_abierta == 0 and 
+                not ultima_posicion_cerrada and 
+                datos_ultima_operacion and 
+                hubo_posicion_abierta and
+                tiempo_ultima_apertura and
+                (tiempo_actual - tiempo_ultima_apertura) > 10):
+
+                time.sleep(5)
+                trades = client.futures_account_trades(symbol=symbol)
+                if trades:
+                    ultimo_trade = trades[-1]
+                    pnl = float(ultimo_trade.get('realizedPnl', 0))
+                    precio_ejecucion = float(ultimo_trade['price'])
+                    tp = datos_ultima_operacion["tp"]
+                    sl = datos_ultima_operacion["sl"]
+                    senal_original = datos_ultima_operacion["senal"]
+
+                    trade_time = int(ultimo_trade['time']) / 1000
+                    if trade_time > tiempo_ultima_apertura:
+                        precio_entrada = datos_ultima_operacion["precio_entrada"]
+                        if senal_original == 'long':
+                            if precio_ejecucion > precio_entrada:
+                                resultado = "TP"
+                                enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
+                            else:
+                                resultado = "SL"
+                                enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
+                        else:
+                            if precio_ejecucion < precio_entrada:
+                                resultado = "TP"
+                                enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
+                            else:
+                                resultado = "SL"
+                                enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
+                        log_consola(f"📊 Detalles del cierre: Precio entrada={precio_entrada:.4f}, Precio ejecución={precio_ejecucion:.4f}, {resultado}")
+                    else:
+                        resultado = ""
+                        pnl = None
+                        log_consola("⚠️ Trade detectado no corresponde a la posición actual")
+                else:
+                    resultado = ""
+                    pnl = None
+                    enviar_telegram(f"🔔 Posición cerrada en {symbol}. No se pudo obtener el PnL.")
+
+                registrar_operacion(
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    datos_ultima_operacion["senal"],
+                    datos_ultima_operacion["precio_entrada"],
+                    datos_ultima_operacion["cantidad_real"],
+                    datos_ultima_operacion["tp"],
+                    datos_ultima_operacion["sl"],
+                    resultado=resultado,
+                    pnl=pnl,
+                    symbol=symbol
+                )
+                ultima_posicion_cerrada = True
+                datos_ultima_operacion = {}
+                hubo_posicion_abierta = False
+                tiempo_ultima_apertura = None
+
+            # --- 2. SOLO SI NO HAY CIERRE PENDIENTE, PROCESA NUEVA SEÑAL ---
+            senal = calcular_senal(df)
+            log_consola(f"Señal detectada: {senal.upper()}")
 
             # Cancelar órdenes TP/SL pendientes si no hay posición abierta
             if pos_abierta == 0:
@@ -472,7 +535,6 @@ def ejecutar_bot_trading():
                 time.sleep(60)
                 continue
 
-            # === Gestión dinámica y avanzada ===
             if senal in ['long', 'short'] and pos_abierta == 0:
                 atr = calcular_atr(df)
                 if atr > umbral_volatilidad:
@@ -480,32 +542,27 @@ def ejecutar_bot_trading():
                     time.sleep(60)
                     continue
 
-                # Gestión de riesgo avanzada
                 balance = client.futures_account_balance()
                 saldo_usdt = next((float(b['balance']) for b in balance if b['asset'] == 'USDT'), 0)
 
-                # Calcula distancia SL en precio (ajustable)
                 precio_actual = float(df['close'].iloc[-1])
-                # Calcula ATR para la última vela
                 atr = df['atr'].iloc[-1]
 
                 if senal == 'long':
-                    sl = precio_actual - atr * sl_multiplier
-                    tp = precio_actual + atr * tp_multiplier
-                    distancia_sl = atr * sl_multiplier
+                    sl = precio_actual - atr * 1.5
+                    tp = precio_actual + atr * 2.5
+                    distancia_sl = atr * 1.5
                 else:
-                    sl = precio_actual + atr * sl_multiplier
-                    tp = precio_actual - atr * tp_multiplier
-                    distancia_sl = atr * sl_multiplier
+                    sl = precio_actual + atr * 1.5
+                    tp = precio_actual - atr * 2.5
+                    distancia_sl = atr * 1.5
 
-                # Redondeo de precios y cantidad según precisión del símbolo
                 cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
                 cantidad = calcular_cantidad_riesgo(saldo_usdt, riesgo_pct, distancia_sl)
                 cantidad = round(cantidad, cantidad_decimales)
                 sl = round(sl, precio_decimales)
                 tp = round(tp, precio_decimales)
 
-                # Ajuste para cumplir el mínimo notional de Binance
                 notional = precio_actual * cantidad
                 if notional < 5:
                     cantidad_minima = round(5 / precio_actual, cantidad_decimales)
@@ -588,100 +645,28 @@ def ejecutar_bot_trading():
                 else:
                     log_consola(f"❌ No se pudo ejecutar la orden {senal.upper()}.")
 
-            # Verificar cierre de posición solo si ha pasado suficiente tiempo desde la apertura
-            tiempo_actual = time.time()
-            if (pos_abierta == 0 and 
-                not ultima_posicion_cerrada and 
-                datos_ultima_operacion and 
-                hubo_posicion_abierta and
-                tiempo_ultima_apertura and
-                (tiempo_actual - tiempo_ultima_apertura) > 10):  # Esperar al menos 10 segundos
-                
-                # Espera unos segundos para que Binance registre el trade de cierre real
-                time.sleep(5)
-                trades = client.futures_account_trades(symbol=symbol)
-                if trades:
-                    ultimo_trade = trades[-1]
-                    pnl = float(ultimo_trade.get('realizedPnl', 0))
-                    precio_ejecucion = float(ultimo_trade['price'])
-                    tp = datos_ultima_operacion["tp"]
-                    sl = datos_ultima_operacion["sl"]
-                    senal_original = datos_ultima_operacion["senal"]
-                    
-                    # Verificar que el trade realmente corresponde a la posición que abrimos
-                    trade_time = int(ultimo_trade['time']) / 1000  # Convertir a segundos
-                    if trade_time > tiempo_ultima_apertura:
-                        # Lógica mejorada para determinar TP vs SL
-                        # Para LONG: TP > precio_entrada, SL < precio_entrada
-                        # Para SHORT: TP < precio_entrada, SL > precio_entrada
-                        precio_entrada = datos_ultima_operacion["precio_entrada"]
-                        
-                        if senal_original == 'long':
-                            # En posición LONG, si el precio de ejecución es mayor al precio de entrada, probablemente fue TP
-                            if precio_ejecucion > precio_entrada:
-                                resultado = "TP"
-                                enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
-                            else:
-                                resultado = "SL"
-                                enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
-                        else:  # senal_original == 'short'
-                            # En posición SHORT, si el precio de ejecución es menor al precio de entrada, probablemente fue TP
-                            if precio_ejecucion < precio_entrada:
-                                resultado = "TP"
-                                enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
-                            else:
-                                resultado = "SL"
-                                enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
-                        
-                        log_consola(f"📊 Detalles del cierre: Precio entrada={precio_entrada:.4f}, Precio ejecución={precio_ejecucion:.4f}, {resultado}")
-                    else:
-                        resultado = ""
-                        pnl = None
-                        log_consola("⚠️ Trade detectado no corresponde a la posición actual")
-                else:
-                    resultado = ""
-                    pnl = None
-                    enviar_telegram(f"🔔 Posición cerrada en {symbol}. No se pudo obtener el PnL.")
+            time.sleep(60)
 
-                registrar_operacion(
-                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    datos_ultima_operacion["senal"],
-                    datos_ultima_operacion["precio_entrada"],
-                    datos_ultima_operacion["cantidad_real"],
-                    datos_ultima_operacion["tp"],
-                    datos_ultima_operacion["sl"],
-                    resultado=resultado,
-                    pnl=pnl,
-                    symbol=symbol
-                )
-                ultima_posicion_cerrada = True
-                datos_ultima_operacion = {}
-                hubo_posicion_abierta = False
-                tiempo_ultima_apertura = None
-
-            time.sleep(60)  # Esperar antes de la siguiente verificación
-            
         except Exception as e:
             error_msg = f"🚨 **ERROR CRÍTICO EN BOT {symbol}** 🚨\n"
             error_msg += f"⏰ **Hora:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             error_msg += f"❌ **Error:** {str(e)}\n"
             error_msg += f"🔍 **Tipo:** {type(e).__name__}\n"
             error_msg += f"📋 **Traceback:**\n```\n{traceback.format_exc()[:500]}...\n```"
-            
+
             log_consola(f"❌ Error crítico: {e}")
             print(traceback.format_exc())
-            
+
             try:
                 enviar_telegram(error_msg)
             except Exception as telegram_error:
                 log_consola(f"❌ Error enviando notificación de error crítico: {telegram_error}")
-            
+
             log_consola("🔄 Reintentando en 60 segundos...")
             time.sleep(60)
             continue
-    
-    # Notificar que el bot se detuvo
-    enviar_telegram(f"🛑 **Bot {symbol} - Estrategia ATOM detenido**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    enviar_telegram(f"🛑 **Bot {symbol} detenido**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log_consola("Bot de trading detenido")
 
 # ============ INICIO DEL PROGRAMA ============
