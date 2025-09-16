@@ -16,20 +16,16 @@ import json
 # ======== CONFIGURACIÓN ========
 api_key = 'Lw3sQdyAZcEJ2s522igX6E28ZL629ZL5JJ9UaqLyM7PXeNRLDu30LmPYFNJ4ixAx'
 api_secret = 'Adw4DXL2BI9oS4sCJlS3dlBeoJQo6iPezmykfL1bhhm0NQe7aTHpaWULLQ0dYOIt'
-symbol = 'RUNEUSDT'
-intervalo = '15m'
-riesgo_pct = 0.03  # 3% de riesgo por operación
-
-# === Parámetros de la estrategia adaptada de TradingView ===
-bb_length = 21  # Periodo Bandas Bollinger
-bb_mult = 2.4   # Desviación Bandas Bollinger
-atr_length = 16  # Periodo ATR
-ma_trend_length = 50  # Periodo MA Tendencia
-umbral_volatilidad = 0.04  # Umbral ATR (filtro volatilidad)
-
-# Multiplicadores TP/SL ajustados según la estrategia
-tp_multiplier = 2.2  # Take Profit multiplicador
-sl_multiplier = 1.5  # Stop Loss multiplicador
+symbol = 'KAITOUSDT'
+intervalo = '1h'
+riesgo_pct = 0.01  # 1% de riesgo por operación
+umbral_volatilidad = 0.02  # ATR máximo permitido para operar
+bb_length = 20  # Periodo por defecto para Bandas de Bollinger
+bb_mult = 2.0  # Multiplicador por defecto para Bandas de Bollinger
+atr_length = 17  # Periodo por defecto para ATR
+ma_trend_length = 50  # Periodo por defecto para MA de tendencia
+tp_multiplier = 2.7  # Multiplicador por defecto para Take Profit
+sl_multiplier = 1.5  # Multiplicador por defecto para Stop Loss
 # ===============================
 
 client = Client(api_key, api_secret)
@@ -186,6 +182,33 @@ def procesar_comando_telegram(comando):
         except Exception as e:
             return f"❌ Error al actualizar: {e}"
 
+    elif comando.startswith("registro"):
+        partes = comando.split()
+        num = 5
+        if len(partes) > 1 and partes[1].isdigit():
+            num = int(partes[1])
+        return obtener_resumen_operaciones(num)
+
+    elif comando == "analizar":
+        return analizar_operaciones()
+
+    elif comando == "descargar_registro":
+        archivo = 'registro_operaciones.csv'
+        if not os.path.exists(archivo):
+            return "❌ No hay registro de operaciones aún."
+        enviar_archivo_telegram(archivo)
+        return "📄 Registro enviado por Telegram."
+
+    elif comando == "eliminar_registro":
+        archivo = 'registro_operaciones.csv'
+        if not os.path.exists(archivo):
+            return "❌ No hay registro de operaciones para eliminar."
+        try:
+            os.remove(archivo)
+            return "🗑️ Registro de operaciones eliminado correctamente."
+        except Exception as e:
+            return f"❌ Error al eliminar el registro: {e}"
+
     else:
         return """🤖 **Comandos disponibles:**
 
@@ -196,6 +219,11 @@ def procesar_comando_telegram(comando):
 • `configurar` - Muestra y permite cambiar la configuración
 • `set parametro valor` - Cambia un parámetro de configuración
     Ejemplo: `set simbolo BTCUSDT`
+• `registro` - Muestra las últimas 5 operaciones
+• `registro 10` - Muestra las últimas 10 operaciones
+• `analizar` - Muestra un resumen de resultados del registro
+• `descargar_registro` - Descarga el registro de operaciones (CSV)
+• `eliminar_registro` - Elimina el registro de operaciones
 """
 
 def bot_telegram_control():
@@ -252,7 +280,7 @@ def enviar_error_telegram(error, contexto=""):
     try:
         enviar_telegram(mensaje)
     except Exception as e:
-        log_consola(f"❌ Error enviando notificación de error: {e}")
+        print(f"❌ Error enviando notificación de error: {e}")
 
 def manejar_excepcion(func):
     """Decorador para manejar excepciones y enviar notificaciones"""
@@ -274,13 +302,12 @@ def obtener_datos(symbol, intervalo, limite=100):
     df['low'] = df['low'].astype(float)
     return df[['close', 'high', 'low']]
 
-def calcular_senal(df, umbral_volatilidad=0.04):
-    # === Indicadores según la estrategia de TradingView ===
-    # Bandas de Bollinger con parámetros ajustados
-    df['ma'] = df['close'].rolling(window=bb_length).mean()
-    df['std'] = df['close'].rolling(window=bb_length).std()
-    df['upper'] = df['ma'] + bb_mult * df['std']
-    df['lower'] = df['ma'] - bb_mult * df['std']
+def calcular_senal(df, umbral_volatilidad=0.02):
+    # Bandas de Bollinger y ATR
+    df['ma'] = df['close'].rolling(window=19).mean()
+    df['std'] = df['close'].rolling(window=19).std()
+    df['upper'] = df['ma'] + 2 * df['std']
+    df['lower'] = df['ma'] - 2 * df['std']
     
     # ATR usando la fórmula estándar (True Range)
     df['prev_close'] = df['close'].shift(1)
@@ -288,15 +315,11 @@ def calcular_senal(df, umbral_volatilidad=0.04):
     df['tr2'] = abs(df['high'] - df['prev_close'])
     df['tr3'] = abs(df['low'] - df['prev_close'])
     df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-    df['atr'] = df['tr'].rolling(window=atr_length).mean()
+    df['atr'] = df['tr'].rolling(window=14).mean()
     
-    # Media móvil de tendencia
-    df['ma_trend'] = df['close'].rolling(window=ma_trend_length).mean()
-    
-    if len(df) < max(bb_length, ma_trend_length) + 1:
+    if len(df) < 21:
         return 'neutral'
     
-    # === Filtros ===
     close_now = df['close'].iloc[-1]
     close_prev = df['close'].iloc[-2]
     upper_now = df['upper'].iloc[-1]
@@ -304,27 +327,14 @@ def calcular_senal(df, umbral_volatilidad=0.04):
     lower_now = df['lower'].iloc[-1]
     lower_prev = df['lower'].iloc[-2]
     atr_now = df['atr'].iloc[-1]
-    ma_trend_now = df['ma_trend'].iloc[-1]
     
-    # Filtro de volatilidad
     filtro_volatilidad = atr_now < umbral_volatilidad
-    
-    # Filtros de tendencia
-    filtro_long = close_now > ma_trend_now
-    filtro_short = close_now < ma_trend_now
-    
-    # === Señales (cruce + filtro de tendencia) ===
-    # Señal long: cruce arriba banda superior + filtro volatilidad + filtro tendencia alcista
-    long_signal = (close_prev <= upper_prev and close_now > upper_now and 
-                   filtro_volatilidad and filtro_long)
-    
-    # Señal short: cruce abajo banda inferior + filtro volatilidad + filtro tendencia bajista
-    short_signal = (close_prev >= lower_prev and close_now < lower_now and 
-                    filtro_volatilidad and filtro_short)
-    
-    if long_signal:
+
+    # Señal long: cruce arriba banda superior y filtro de volatilidad
+    if close_prev <= upper_prev and close_now > upper_now and filtro_volatilidad:
         return 'long'
-    elif short_signal:
+    # Señal short: cruce abajo banda inferior y filtro de volatilidad
+    elif close_prev >= lower_prev and close_now < lower_now and filtro_volatilidad:
         return 'short'
     else:
         return 'neutral'
@@ -347,29 +357,30 @@ def ejecutar_orden(senal, symbol, cantidad):
                 quantity=cantidad
             )
         except Exception as e:
-            log_consola(f"❌ Error al crear la orden de mercado: {e}")
+            print(f"❌ Error al crear la orden de mercado: {e}")
             return None, None
 
         # Verifica que la posición realmente se abrió
         info_pos = client.futures_position_information(symbol=symbol)
         if not info_pos or float(info_pos[0]['positionAmt']) == 0:
-            log_consola("❌ La orden fue enviada pero no se abrió posición. Puede ser por cantidad mínima o error de Binance.")
+            print("❌ La orden fue enviada pero no se abrió posición. Puede ser por cantidad mínima o error de Binance.")
             return None, None
 
         precio = float(info_pos[0]['entryPrice'])
-        log_consola(f"✅ Operación {senal.upper()} ejecutada a {precio}")
+        print(f"✅ Operación {senal.upper()} ejecutada a {precio}")
         return precio, cantidad
 
     except Exception as e:
-        log_consola(f"❌ Error inesperado: {e}")
+        print(f"❌ Error inesperado: {e}")
         enviar_telegram(f"❌ Error inesperado: {e}")
 
 def registrar_operacion(fecha, tipo, precio_entrada, cantidad, tp, sl, resultado=None, pnl=None, symbol=None):
-    archivo = 'registro_operaciones_universal.csv'
+    archivo = 'registro_operaciones.csv'  # Cambia el nombre si usas uno diferente por bot
     existe = os.path.isfile(archivo)
     with open(archivo, mode='a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         if not existe:
+
             writer.writerow(['Fecha', 'Símbolo', 'Tipo', 'Precio Entrada', 'Cantidad', 'Take Profit', 'Stop Loss', 'Resultado', 'PnL'])
         writer.writerow([fecha, symbol, tipo, precio_entrada, cantidad, tp, sl, resultado if resultado else "", pnl if pnl is not None else ""])
 
@@ -425,6 +436,7 @@ def ejecutar_bot_trading():
     datos_ultima_operacion = {}
     hubo_posicion_abierta = False
     tiempo_ultima_apertura = None
+    perdidas_consecutivas = 0  # Al inicio de ejecutar_bot_trading
 
     # Notificar inicio del bot
     enviar_telegram(f"🤖 **Bot {symbol} iniciado**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n📊 Símbolo: {symbol}\n⏱️ Intervalo: {intervalo}")
@@ -497,6 +509,17 @@ def ejecutar_bot_trading():
                     pnl = None
                     enviar_telegram(f"🔔 Posición cerrada en {symbol}. No se pudo obtener el PnL.")
 
+                if resultado == "SL":
+                    perdidas_consecutivas += 1
+                else:
+                    perdidas_consecutivas = 0
+
+                if perdidas_consecutivas >= 3:
+                    enviar_telegram(f"⚠️ Bot {symbol} detenido tras 3 pérdidas consecutivas. Revisión sugerida")
+                    log_consola(f"⚠️ Bot {symbol} detenido tras 3 pérdidas consecutivas.")
+                    bot_activo = False
+                    break
+
                 registrar_operacion(
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     datos_ultima_operacion["senal"],
@@ -549,13 +572,13 @@ def ejecutar_bot_trading():
                 atr = df['atr'].iloc[-1]
 
                 if senal == 'long':
-                    sl = precio_actual - atr * 1.5
-                    tp = precio_actual + atr * 2.5
-                    distancia_sl = atr * 1.5
+                    sl = precio_actual - atr * sl_multiplier
+                    tp = precio_actual + atr * tp_multiplier
+                    distancia_sl = atr * sl_multiplier
                 else:
-                    sl = precio_actual + atr * 1.5
-                    tp = precio_actual - atr * 2.5
-                    distancia_sl = atr * 1.5
+                    sl = precio_actual + atr * sl_multiplier
+                    tp = precio_actual - atr * tp_multiplier
+                    distancia_sl = atr * sl_multiplier
 
                 cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
                 cantidad = calcular_cantidad_riesgo(saldo_usdt, riesgo_pct, distancia_sl)
@@ -669,9 +692,67 @@ def ejecutar_bot_trading():
     enviar_telegram(f"🛑 **Bot {symbol} detenido**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log_consola("Bot de trading detenido")
 
+def enviar_archivo_telegram(ruta_archivo, nombre_archivo=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
+    if not os.path.exists(ruta_archivo):
+        enviar_telegram("❌ El archivo no existe.")
+        return
+    with open(ruta_archivo, "rb") as f:
+        files = {"document": (nombre_archivo or os.path.basename(ruta_archivo), f)}
+        data = {"chat_id": TELEGRAM_CHAT_ID}
+        try:
+            response = requests.post(url, data=data, files=files)
+            if response.status_code == 200:
+                log_consola("✅ Registro enviado por Telegram.")
+            else:
+                log_consola(f"❌ Error enviando archivo: {response.text}")
+        except Exception as e:
+            log_consola(f"❌ Error enviando archivo por Telegram: {e}")
+
+def obtener_resumen_operaciones(num=5):
+    archivo = 'registro_operaciones.csv'
+    if not os.path.exists(archivo):
+        return "❌ No hay registro de operaciones aún."
+    try:
+        df = pd.read_csv(archivo)
+        if df.empty:
+            return "❌ El registro de operaciones está vacío."
+        ultimas = df.tail(num)
+        resumen = "📋 **Últimas operaciones:**\n"
+        for _, row in ultimas.iterrows():
+            resumen += (f"{row['Fecha']} | {row['Símbolo']} | {row['Tipo']} | Entrada: {row['Precio Entrada']} | "
+                        f"TP: {row['Take Profit']} | SL: {row['Stop Loss']} | "
+                        f"Resultado: {row['Resultado']} | PnL: {row['PnL']}\n")
+        return resumen
+    except Exception as e:
+        return f"❌ Error leyendo el registro: {e}"
+
+def analizar_operaciones():
+    archivo = 'registro_operaciones.csv'
+    if not os.path.exists(archivo):
+        return "❌ No hay registro de operaciones aún."
+    try:
+        df = pd.read_csv(archivo)
+        if df.empty:
+            return "❌ El registro de operaciones está vacío."
+        total = len(df)
+        ganadoras = df['Resultado'].str.upper().eq('TP').sum()
+        perdedoras = df['Resultado'].str.upper().eq('SL').sum()
+        pnl_total = pd.to_numeric(df['PnL'], errors='coerce').sum()
+        resumen = (
+            f"📊 **Análisis de Operaciones:**\n"
+            f"• Total: {total}\n"
+            f"• Ganadoras (TP): {ganadoras}\n"
+            f"• Perdedoras (SL): {perdedoras}\n"
+            f"• PnL total: {pnl_total:.4f} USDT"
+        )
+        return resumen
+    except Exception as e:
+        return f"❌ Error analizando el registro: {e}"
+
 # ============ INICIO DEL PROGRAMA ============
 if __name__ == "__main__":
-    print("🤖 Bot de Control ATOMUSDT iniciado")
+    print("🤖 Bot de Control SPKUSDT iniciado")
     print("📱 Envía comandos por Telegram:")
     print("   • 'iniciar' - Inicia el bot de trading")
     print("   • 'consultar' - Muestra los últimos mensajes")
