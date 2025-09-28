@@ -515,22 +515,34 @@ def ejecutar_bot_trading():
                     perdidas_consecutivas = 0
 
                 if perdidas_consecutivas >= 3:
+                    # Registrar la última operación ANTES de detener el bot
+                    registrar_operacion(
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        datos_ultima_operacion["senal"],
+                        datos_ultima_operacion["precio_entrada"],
+                        datos_ultima_operacion["cantidad_real"],
+                        datos_ultima_operacion["tp"],
+                        datos_ultima_operacion["sl"],
+                        resultado=resultado,
+                        pnl=pnl,
+                        symbol=symbol
+                    )
                     enviar_telegram(f"⚠️ Bot {symbol} detenido tras 3 pérdidas consecutivas. Revisión sugerida")
                     log_consola(f"⚠️ Bot {symbol} detenido tras 3 pérdidas consecutivas.")
                     bot_activo = False
                     break
-
-                registrar_operacion(
-                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    datos_ultima_operacion["senal"],
-                    datos_ultima_operacion["precio_entrada"],
-                    datos_ultima_operacion["cantidad_real"],
-                    datos_ultima_operacion["tp"],
-                    datos_ultima_operacion["sl"],
-                    resultado=resultado,
-                    pnl=pnl,
-                    symbol=symbol
-                )
+                else:
+                    registrar_operacion(
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        datos_ultima_operacion["senal"],
+                        datos_ultima_operacion["precio_entrada"],
+                        datos_ultima_operacion["cantidad_real"],
+                        datos_ultima_operacion["tp"],
+                        datos_ultima_operacion["sl"],
+                        resultado=resultado,
+                        pnl=pnl,
+                        symbol=symbol
+                    )
                 ultima_posicion_cerrada = True
                 datos_ultima_operacion = {}
                 hubo_posicion_abierta = False
