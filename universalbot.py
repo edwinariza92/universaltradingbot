@@ -472,10 +472,12 @@ def ejecutar_bot_trading():
                 tiempo_ultima_apertura and
                 (tiempo_actual - tiempo_ultima_apertura) > 10):
 
-                time.sleep(5)
+                time.sleep(8)  # Aumenta el delay si es necesario
                 trades = client.futures_account_trades(symbol=symbol)
-                if trades:
-                    ultimo_trade = trades[-1]
+                # Filtra solo los trades de cierre reales
+                trades_cierre = [t for t in trades if float(t.get('realizedPnl', 0)) != 0 and int(t['time'])/1000 > tiempo_ultima_apertura]
+                if trades_cierre:
+                    ultimo_trade = trades_cierre[-1]
                     pnl = float(ultimo_trade.get('realizedPnl', 0))
                     precio_ejecucion = float(ultimo_trade['price'])
                     tp = datos_ultima_operacion["tp"]
