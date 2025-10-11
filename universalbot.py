@@ -24,7 +24,7 @@ bb_length = 20  # Periodo por defecto para Bandas de Bollinger
 bb_mult = 2.0  # Multiplicador por defecto para Bandas de Bollinger
 atr_length = 17  # Periodo por defecto para ATR
 ma_trend_length = 50  # Periodo por defecto para MA de tendencia
-tp_multiplier = 2.7  # Multiplicador por defecto para Take Profit
+tp_multiplier = 2.6  # Multiplicador por defecto para Take Profit
 sl_multiplier = 1.5  # Multiplicador por defecto para Stop Loss
 # ===============================
 
@@ -130,7 +130,8 @@ def procesar_comando_telegram(comando):
                 f"• ATR: {atr_length}\n"
                 f"• MA Tendencia: {ma_trend_length}\n"
                 f"• Umbral ATR: {umbral_volatilidad}\n"
-                f"• TP Mult: {tp_multiplier} | SL Mult: {sl_multiplier}")
+                f"• TP Mult: {tp_multiplier} | SL Mult: {sl_multiplier}\n"
+                "v11.10.25")
 
     elif comando == "configurar":
         return (
@@ -161,7 +162,8 @@ def procesar_comando_telegram(comando):
             elif param == "intervalo":
                 intervalo = valor
             elif param == "riesgo":
-                riesgo_pct = float(valor)
+                # Permite ingresar el porcentaje como número entero (ej: 1 para 1%)
+                riesgo_pct = float(valor) / 100 if float(valor) > 1 else float(valor)
             elif param == "bb":
                 bb_length = int(valor)
             elif param == "bbmult":
@@ -209,6 +211,9 @@ def procesar_comando_telegram(comando):
         except Exception as e:
             return f"❌ Error al eliminar el registro: {e}"
 
+    elif comando == "cancelar":
+        return cancelar_operaciones(symbol)
+
     else:
         return """🤖 **Comandos disponibles:**
 
@@ -224,6 +229,7 @@ def procesar_comando_telegram(comando):
 • `analizar` - Muestra un resumen de resultados del registro
 • `descargar_registro` - Descarga el registro de operaciones (CSV)
 • `eliminar_registro` - Elimina el registro de operaciones
+• `cancelar` - Cierra la posición abierta y cancela órdenes TP/SL pendientes
 """
 
 def bot_telegram_control():
@@ -763,6 +769,44 @@ def analizar_operaciones():
         return resumen
     except Exception as e:
         return f"❌ Error analizando el registro: {e}"
+
+def cancelar_operaciones(symbol):
+    """Cancela la posición abierta y todas las órdenes TP/SL pendientes"""
+    mensajes = []
+    # 1. Cerrar posición abierta
+    info_pos = client.futures_position_information(symbol=symbol)
+    if info_pos and float(info_pos[0]['positionAmt']) != 0:
+        cantidad = abs(float(info_pos[0]['positionAmt']))
+        side = SIDE_SELL if float(info_pos[0]['positionAmt']) > 0 else SIDE_BUY
+        try:
+            client.futures_create_order(
+                symbol=symbol,
+                side=side,
+                type=ORDER_TYPE_MARKET,
+                quantity=cantidad,
+                reduceOnly=True
+            )
+            mensajes.append("✅ Posición cerrada correctamente.")
+        except Exception as e:
+            mensajes.append(f"❌ Error al cerrar posición: {e}")
+    else:
+        mensajes.append("ℹ️ No hay posición abierta para cerrar.")
+
+    # 2. Cancelar órdenes TP/SL pendientes
+    ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
+    canceladas = 0
+    for orden in ordenes_abiertas:
+        if orden['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
+            try:
+                client.futures_cancel_order(symbol=symbol, orderId=orden['orderId'])
+                canceladas += 1
+            except Exception as e:
+                mensajes.append(f"❌ Error al cancelar orden {orden['type']}: {e}")
+    if canceladas > 0:
+        mensajes.append(f"🗑️ {canceladas} órdenes TP/SL canceladas.")
+    else:
+        mensajes.append("ℹ️ No había órdenes TP/SL pendientes.")
+    return "\n".join(mensajes)
 
 # ============ INICIO DEL PROGRAMA ============
 if __name__ == "__main__":
