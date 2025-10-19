@@ -16,15 +16,15 @@ import json
 # ======== CONFIGURACIÓN ========
 api_key = 'Lw3sQdyAZcEJ2s522igX6E28ZL629ZL5JJ9UaqLyM7PXeNRLDu30LmPYFNJ4ixAx'
 api_secret = 'Adw4DXL2BI9oS4sCJlS3dlBeoJQo6iPezmykfL1bhhm0NQe7aTHpaWULLQ0dYOIt'
-symbol = 'KAITOUSDT'
-intervalo = '1h'
+symbol = 'TOWNSUSDT'
+intervalo = '15m'
 riesgo_pct = 0.01  # 1% de riesgo por operación
 umbral_volatilidad = 0.02  # ATR máximo permitido para operar
-bb_length = 20  # Periodo por defecto para Bandas de Bollinger
-bb_mult = 2.0  # Multiplicador por defecto para Bandas de Bollinger
-atr_length = 17  # Periodo por defecto para ATR
+bb_length = 18  # Periodo por defecto para Bandas de Bollinger
+bb_mult = 3  # Multiplicador por defecto para Bandas de Bollinger
+atr_length = 3  # Periodo por defecto para ATR
 ma_trend_length = 50  # Periodo por defecto para MA de tendencia
-tp_multiplier = 2.6  # Multiplicador por defecto para Take Profit
+tp_multiplier = 3.8  # Multiplicador por defecto para Take Profit
 sl_multiplier = 1.5  # Multiplicador por defecto para Stop Loss
 # ===============================
 
@@ -39,6 +39,7 @@ bot_activo = False
 bot_thread = None
 mensajes_consola = queue.Queue(maxsize=50)  # Cola para almacenar mensajes de consola
 ultimo_mensaje_consola = "Bot no iniciado"
+registro_lock = threading.Lock()  # Lock para proteger escritura del CSV
 # ===================================
 
 def enviar_telegram(mensaje):
@@ -62,7 +63,7 @@ def log_consola(mensaje):
         if mensajes_consola.full():
             mensajes_consola.get_nowait()
         mensajes_consola.put_nowait(mensaje_completo)
-    except:
+    except Exception:
         pass
 
 def obtener_ultimos_mensajes(num_mensajes=10):
@@ -76,14 +77,14 @@ def obtener_ultimos_mensajes(num_mensajes=10):
             msg = mensajes_consola.get_nowait()
             mensajes.append(msg)
             temp_queue.put_nowait(msg)
-        except:
+        except Exception:
             break
     
     # Restaurar mensajes a la cola original
     while not temp_queue.empty():
         try:
             mensajes_consola.put_nowait(temp_queue.get_nowait())
-        except:
+        except Exception:
             break
     
     # Retornar los últimos N mensajes
@@ -131,7 +132,7 @@ def procesar_comando_telegram(comando):
                 f"• MA Tendencia: {ma_trend_length}\n"
                 f"• Umbral ATR: {umbral_volatilidad}\n"
                 f"• TP Mult: {tp_multiplier} | SL Mult: {sl_multiplier}\n"
-                "v11.10.25")
+                "v18.10.25")
 
     elif comando == "configurar":
         return (
@@ -163,7 +164,8 @@ def procesar_comando_telegram(comando):
                 intervalo = valor
             elif param == "riesgo":
                 # Permite ingresar el porcentaje como número entero (ej: 1 para 1%)
-                riesgo_pct = float(valor) / 100 if float(valor) > 1 else float(valor)
+                # Si el valor es >= 1 se interpreta como porcentaje (1 -> 1%), en caso contrario se interpreta como fracción (0.01 -> 1%)
+                riesgo_pct = float(valor) / 100 if float(valor) >= 1 else float(valor)
             elif param == "bb":
                 bb_length = int(valor)
             elif param == "bbmult":
@@ -308,24 +310,37 @@ def obtener_datos(symbol, intervalo, limite=100):
     df['low'] = df['low'].astype(float)
     return df[['close', 'high', 'low']]
 
-def calcular_senal(df, umbral_volatilidad=0.02):
-    # Bandas de Bollinger y ATR
-    df['ma'] = df['close'].rolling(window=19).mean()
-    df['std'] = df['close'].rolling(window=19).std()
-    df['upper'] = df['ma'] + 2 * df['std']
-    df['lower'] = df['ma'] - 2 * df['std']
-    
-    # ATR usando la fórmula estándar (True Range)
+def calcular_senal(df, umbral=None):
+    """
+    Calcula la señal usando Bandas de Bollinger y ATR.
+    Si `umbral` es None usa la variable global `umbral_volatilidad`.
+    Usa los globals bb_length y bb_mult para las BB y atr_length para el ATR.
+    """
+    global bb_length, bb_mult, atr_length, umbral_volatilidad
+
+    if umbral is None:
+        umbral = umbral_volatilidad
+
+    # Evitar modificar DataFrame original fuera de alcance (opcional)
+    # df = df.copy()
+
+    # Bandas de Bollinger usando los parámetros globales
+    df['ma'] = df['close'].rolling(window=bb_length).mean()
+    df['std'] = df['close'].rolling(window=bb_length).std()
+    df['upper'] = df['ma'] + bb_mult * df['std']
+    df['lower'] = df['ma'] - bb_mult * df['std']
+
+    # ATR usando la función que maneja su propio periodo (por defecto atr_length)
     df['prev_close'] = df['close'].shift(1)
     df['tr1'] = df['high'] - df['low']
-    df['tr2'] = abs(df['high'] - df['prev_close'])
-    df['tr3'] = abs(df['low'] - df['prev_close'])
+    df['tr2'] = (df['high'] - df['prev_close']).abs()
+    df['tr3'] = (df['low'] - df['prev_close']).abs()
     df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-    df['atr'] = df['tr'].rolling(window=14).mean()
-    
-    if len(df) < 21:
+    df['atr'] = df['tr'].rolling(window=atr_length).mean()
+
+    if len(df) < max(bb_length, atr_length) + 1:
         return 'neutral'
-    
+
     close_now = df['close'].iloc[-1]
     close_prev = df['close'].iloc[-2]
     upper_now = df['upper'].iloc[-1]
@@ -333,17 +348,33 @@ def calcular_senal(df, umbral_volatilidad=0.02):
     lower_now = df['lower'].iloc[-1]
     lower_prev = df['lower'].iloc[-2]
     atr_now = df['atr'].iloc[-1]
-    
-    filtro_volatilidad = atr_now < umbral_volatilidad
 
-    # Señal long: cruce arriba banda superior y filtro de volatilidad
+    filtro_volatilidad = (atr_now < umbral)
+
     if close_prev <= upper_prev and close_now > upper_now and filtro_volatilidad:
         return 'long'
-    # Señal short: cruce abajo banda inferior y filtro de volatilidad
     elif close_prev >= lower_prev and close_now < lower_now and filtro_volatilidad:
         return 'short'
     else:
         return 'neutral'
+
+def calcular_atr(df, periodo=None):
+    """
+    Calcula el ATR y retorna el último valor.
+    Si periodo es None usa la variable global atr_length.
+    """
+    global atr_length
+    if periodo is None:
+        periodo = atr_length
+
+    df = df.copy()
+    df['prev_close'] = df['close'].shift(1)
+    df['tr1'] = df['high'] - df['low']
+    df['tr2'] = (df['high'] - df['prev_close']).abs()
+    df['tr3'] = (df['low'] - df['prev_close']).abs()
+    df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+    df['atr'] = df['tr'].rolling(window=periodo).mean()
+    return float(df['atr'].iloc[-1]) if not df['atr'].isna().all() else None
 
 def calcular_cantidad_riesgo(saldo_usdt, riesgo_pct, distancia_sl):
     riesgo_usdt = saldo_usdt * riesgo_pct
@@ -352,7 +383,11 @@ def calcular_cantidad_riesgo(saldo_usdt, riesgo_pct, distancia_sl):
     cantidad = riesgo_usdt / distancia_sl
     return round(cantidad, 3)
 
-def ejecutar_orden(senal, symbol, cantidad):
+def ejecutar_orden(senal, symbol, cantidad, reintentos=5, espera=1):
+    """
+    Ejecuta una orden de mercado y espera/reintenta para confirmar la apertura de la posición.
+    Retorna (precio_entrada, cantidad_real) o (None, None) en fallo.
+    """
     try:
         side = SIDE_BUY if senal == 'long' else SIDE_SELL
         try:
@@ -363,32 +398,45 @@ def ejecutar_orden(senal, symbol, cantidad):
                 quantity=cantidad
             )
         except Exception as e:
-            print(f"❌ Error al crear la orden de mercado: {e}")
+            log_consola(f"❌ Error al crear la orden de mercado: {e}")
             return None, None
 
-        # Verifica que la posición realmente se abrió
-        info_pos = client.futures_position_information(symbol=symbol)
-        if not info_pos or float(info_pos[0]['positionAmt']) == 0:
-            print("❌ La orden fue enviada pero no se abrió posición. Puede ser por cantidad mínima o error de Binance.")
-            return None, None
+        # Esperar y reintentar para asegurar que la posición se refleje
+        for _ in range(reintentos):
+            time.sleep(espera)
+            try:
+                info_pos = client.futures_position_information(symbol=symbol)
+            except Exception as e:
+                log_consola(f"❌ Error consultando posición tras orden: {e}")
+                continue
 
-        precio = float(info_pos[0]['entryPrice'])
-        print(f"✅ Operación {senal.upper()} ejecutada a {precio}")
-        return precio, cantidad
+            if info_pos and float(info_pos[0]['positionAmt']) != 0:
+                precio = float(info_pos[0]['entryPrice'])
+                cantidad_actual = abs(float(info_pos[0]['positionAmt']))
+                log_consola(f"✅ Operación {senal.upper()} ejecutada a {precio} (cantidad: {cantidad_actual})")
+                return precio, cantidad_actual
+
+        # Si no se abrió posición tras reintentos
+        log_consola("❌ La orden fue enviada pero no se abrió posición. Puede ser por cantidad mínima o error de Binance.")
+        return None, None
 
     except Exception as e:
-        print(f"❌ Error inesperado: {e}")
-        enviar_telegram(f"❌ Error inesperado: {e}")
+        log_consola(f"❌ Error inesperado en ejecutar_orden: {e}")
+        try:
+            enviar_telegram(f"❌ Error inesperado en ejecutar_orden: {e}")
+        except Exception:
+            pass
+        return None, None
 
 def registrar_operacion(fecha, tipo, precio_entrada, cantidad, tp, sl, resultado=None, pnl=None, symbol=None):
     archivo = 'registro_operaciones.csv'  # Cambia el nombre si usas uno diferente por bot
-    existe = os.path.isfile(archivo)
-    with open(archivo, mode='a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        if not existe:
-
-            writer.writerow(['Fecha', 'Símbolo', 'Tipo', 'Precio Entrada', 'Cantidad', 'Take Profit', 'Stop Loss', 'Resultado', 'PnL'])
-        writer.writerow([fecha, symbol, tipo, precio_entrada, cantidad, tp, sl, resultado if resultado else "", pnl if pnl is not None else ""])
+    with registro_lock:
+        existe = os.path.isfile(archivo)
+        with open(archivo, mode='a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if not existe:
+                writer.writerow(['Fecha', 'Símbolo', 'Tipo', 'Precio Entrada', 'Cantidad', 'Take Profit', 'Stop Loss', 'Resultado', 'PnL'])
+            writer.writerow([fecha, symbol, tipo, precio_entrada, cantidad, tp, sl, resultado if resultado else "", pnl if pnl is not None else ""])
 
 def obtener_precisiones(symbol):
     info = client.futures_exchange_info()
@@ -422,16 +470,32 @@ def calcular_atr(df, periodo=14):
     df['atr'] = df['tr'].rolling(window=periodo).mean()
     return df['atr'].iloc[-1]
 
-def notificar_pnl(symbol):
-    trades = client.futures_account_trades(symbol=symbol)
-    if trades:
-        ultimo_trade = trades[-1]
+def notificar_pnl(symbol, tiempo_minimo=None, espera_segundos=6):
+    """
+    Retorna (pnl, precio_ejecucion, trade_time) del trade de cierre más probable.
+    - tiempo_minimo: timestamp (segundos) para filtrar trades posteriores.
+    - espera_segundos: tiempo a esperar antes de consultar para que Binance procese el trade.
+    """
+    try:
+        time.sleep(espera_segundos)
+        trades = client.futures_account_trades(symbol=symbol)
+        if not trades:
+            return None, None, None
+        # Filtrar trades con realizedPnl distinto de 0
+        trades_cierre = [t for t in trades if float(t.get('realizedPnl', 0)) != 0]
+        if tiempo_minimo:
+            trades_cierre = [t for t in trades_cierre if int(t['time'])/1000 > tiempo_minimo]
+        if not trades_cierre:
+            return None, None, None
+        ultimo_trade = trades_cierre[-1]
         pnl = float(ultimo_trade.get('realizedPnl', 0))
-        enviar_telegram(f"🔔 Posición cerrada en {symbol}. PnL: {pnl:.4f} USDT")
-        return pnl
-    else:
-        enviar_telegram(f"🔔 Posición cerrada en {symbol}. No se pudo obtener el PnL.")
-        return None
+        precio = float(ultimo_trade.get('price', 0))
+        trade_time = int(ultimo_trade['time'])/1000
+        # No enviar notificación aquí si la lógica de notificación la maneja el ciclo principal
+        return pnl, precio, trade_time
+    except Exception as e:
+        log_consola(f"❌ Error obteniendo PnL: {e}")
+        return None, None, None
 
 # ============ FUNCIÓN PRINCIPAL DEL BOT ============
 def ejecutar_bot_trading():
@@ -535,8 +599,39 @@ def ejecutar_bot_trading():
                         pnl=pnl,
                         symbol=symbol
                     )
+
+                    # Intentar cancelar TODAS las órdenes pendientes para este símbolo (TP/SL u otras)
+                    try:
+                        ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
+                        canceladas = 0
+                        for orden in ordenes_abiertas:
+                            try:
+                                client.futures_cancel_order(symbol=symbol, orderId=orden['orderId'])
+                                canceladas += 1
+                            except Exception as e:
+                                log_consola(f"❌ Error al cancelar orden {orden.get('orderId')}: {e}")
+                        if canceladas > 0:
+                            log_consola(f"🗑️ {canceladas} órdenes pendientes canceladas antes de detener el bot.")
+                            try:
+                                enviar_telegram(f"🗑️ {canceladas} órdenes pendientes canceladas en {symbol} antes de detener el bot.")
+                            except Exception:
+                                pass
+                        else:
+                            log_consola("ℹ️ No había órdenes pendientes para cancelar.")
+                    except Exception as e:
+                        log_consola(f"❌ Error consultando/cancelando órdenes pendientes: {e}")
+                        try:
+                            enviar_telegram(f"❌ Error cancelando órdenes pendientes en {symbol}: {e}")
+                        except Exception:
+                            pass
+
                     enviar_telegram(f"⚠️ Bot {symbol} detenido tras 3 pérdidas consecutivas. Revisión sugerida")
                     log_consola(f"⚠️ Bot {symbol} detenido tras 3 pérdidas consecutivas.")
+                    # limpiar estados y detener
+                    ultima_posicion_cerrada = True
+                    datos_ultima_operacion = {}
+                    hubo_posicion_abierta = False
+                    tiempo_ultima_apertura = None
                     bot_activo = False
                     break
                 else:
@@ -776,9 +871,12 @@ def cancelar_operaciones(symbol):
     # 1. Cerrar posición abierta
     info_pos = client.futures_position_information(symbol=symbol)
     if info_pos and float(info_pos[0]['positionAmt']) != 0:
-        cantidad = abs(float(info_pos[0]['positionAmt']))
-        side = SIDE_SELL if float(info_pos[0]['positionAmt']) > 0 else SIDE_BUY
+        position_amt = float(info_pos[0]['positionAmt'])
+        cantidad = abs(position_amt)
+        tipo_pos = "long" if position_amt > 0 else "short"
+        side = SIDE_SELL if position_amt > 0 else SIDE_BUY
         try:
+            # Ejecutar cierre de mercado
             client.futures_create_order(
                 symbol=symbol,
                 side=side,
@@ -789,23 +887,59 @@ def cancelar_operaciones(symbol):
             mensajes.append("✅ Posición cerrada correctamente.")
         except Exception as e:
             mensajes.append(f"❌ Error al cerrar posición: {e}")
+            # continuar para intentar cancelar órdenes pendientes
+            cantidad = None
+
+        # Intentar obtener PnL del trade de cierre y registrar la operación
+        try:
+            if cantidad:
+                time.sleep(6)  # esperar a que Binance registre el trade
+                trades = client.futures_account_trades(symbol=symbol)
+                # Filtrar trades con realizedPnl distinto de 0 (trades de cierre)
+                trades_cierre = [t for t in trades if float(t.get('realizedPnl', 0)) != 0]
+                if trades_cierre:
+                    ultimo = trades_cierre[-1]
+                    pnl = float(ultimo.get('realizedPnl', 0))
+                    precio_ejecucion = float(ultimo.get('price', 0))
+                    resultado = "TP" if pnl > 0 else "SL" if pnl < 0 else "NEUTRAL"
+                    # Registrar operación (no siempre se dispone del precio de entrada aquí)
+                    registrar_operacion(
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        tipo_pos,                   # tipo (long/short)
+                        "",                         # precio_entrada (no disponible aquí)
+                        cantidad,
+                        "",                         # tp (no aplica)
+                        "",                         # sl (no aplica)
+                        resultado=resultado,
+                        pnl=pnl,
+                        symbol=symbol
+                    )
+                    mensajes.append(f"🔔 Registro creado: Resultado {resultado}, PnL {pnl:.4f} USDT")
+                else:
+                    mensajes.append("⚠️ No se encontró trade de cierre para obtener PnL.")
+        except Exception as e:
+            mensajes.append(f"❌ Error obteniendo PnL tras cierre: {e}")
     else:
         mensajes.append("ℹ️ No hay posición abierta para cerrar.")
 
     # 2. Cancelar órdenes TP/SL pendientes
-    ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
-    canceladas = 0
-    for orden in ordenes_abiertas:
-        if orden['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
-            try:
-                client.futures_cancel_order(symbol=symbol, orderId=orden['orderId'])
-                canceladas += 1
-            except Exception as e:
-                mensajes.append(f"❌ Error al cancelar orden {orden['type']}: {e}")
-    if canceladas > 0:
-        mensajes.append(f"🗑️ {canceladas} órdenes TP/SL canceladas.")
-    else:
-        mensajes.append("ℹ️ No había órdenes TP/SL pendientes.")
+    try:
+        ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
+        canceladas = 0
+        for orden in ordenes_abiertas:
+            if orden['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
+                try:
+                    client.futures_cancel_order(symbol=symbol, orderId=orden['orderId'])
+                    canceladas += 1
+                except Exception as e:
+                    mensajes.append(f"❌ Error al cancelar orden {orden['type']}: {e}")
+        if canceladas > 0:
+            mensajes.append(f"🗑️ {canceladas} órdenes TP/SL canceladas.")
+        else:
+            mensajes.append("ℹ️ No había órdenes TP/SL pendientes.")
+    except Exception as e:
+        mensajes.append(f"❌ Error consultando/cancelando órdenes pendientes: {e}")
+
     return "\n".join(mensajes)
 
 # ============ INICIO DEL PROGRAMA ============
