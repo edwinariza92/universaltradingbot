@@ -16,16 +16,17 @@ import json
 # ======== CONFIGURACIÓN ========
 api_key = 'Lw3sQdyAZcEJ2s522igX6E28ZL629ZL5JJ9UaqLyM7PXeNRLDu30LmPYFNJ4ixAx'
 api_secret = 'Adw4DXL2BI9oS4sCJlS3dlBeoJQo6iPezmykfL1bhhm0NQe7aTHpaWULLQ0dYOIt'
-symbol = 'TOWNSUSDT'
-intervalo = '15m'
+symbol = 'APEUSDT'
+intervalo = '30m'
 riesgo_pct = 0.01  # 1% de riesgo por operación
 umbral_volatilidad = 0.02  # ATR máximo permitido para operar
-bb_length = 18  # Periodo por defecto para Bandas de Bollinger
-bb_mult = 3  # Multiplicador por defecto para Bandas de Bollinger
+bb_length = 20  # Periodo por defecto para Bandas de Bollinger
+bb_mult = 3.1  # Multiplicador por defecto para Bandas de Bollinger
 atr_length = 3  # Periodo por defecto para ATR
 ma_trend_length = 50  # Periodo por defecto para MA de tendencia
-tp_multiplier = 3.8  # Multiplicador por defecto para Take Profit
-sl_multiplier = 1.5  # Multiplicador por defecto para Stop Loss
+tp_multiplier = 3.1  # Multiplicador por defecto para Take Profit
+sl_multiplier = 2  # Multiplicador por defecto para Stop Loss
+usar_ma_trend = False  # Nuevo: usar filtro MA de tendencia (False por defecto)
 # ===============================
 
 client = Client(api_key, api_secret)
@@ -93,7 +94,7 @@ def obtener_ultimos_mensajes(num_mensajes=10):
 def procesar_comando_telegram(comando):
     """Procesa comandos recibidos por Telegram"""
     global bot_activo, bot_thread
-    global symbol, intervalo, riesgo_pct, bb_length, bb_mult, atr_length, ma_trend_length, umbral_volatilidad, tp_multiplier, sl_multiplier
+    global symbol, intervalo, riesgo_pct, bb_length, bb_mult, atr_length, ma_trend_length, umbral_volatilidad, tp_multiplier, sl_multiplier, usar_ma_trend
 
     comando = comando.lower().strip()
 
@@ -129,10 +130,10 @@ def procesar_comando_telegram(comando):
                 f"• Riesgo: {riesgo_pct}\n"
                 f"• BB: {bb_length} / {bb_mult}\n"
                 f"• ATR: {atr_length}\n"
-                f"• MA Tendencia: {ma_trend_length}\n"
+                f"• MA Tendencia: {ma_trend_length} ({'ON' if usar_ma_trend else 'OFF'})\n"
                 f"• Umbral ATR: {umbral_volatilidad}\n"
                 f"• TP Mult: {tp_multiplier} | SL Mult: {sl_multiplier}\n"
-                "v18.10.25")
+                "v22.10.25")
 
     elif comando == "configurar":
         return (
@@ -143,7 +144,7 @@ def procesar_comando_telegram(comando):
             f"• Periodo BB: `{bb_length}`\n"
             f"• Desviación BB: `{bb_mult}`\n"
             f"• Periodo ATR: `{atr_length}`\n"
-            f"• Periodo MA Tendencia: `{ma_trend_length}`\n"
+            f"• Periodo MA Tendencia: `{ma_trend_length}` ({'ON' if usar_ma_trend else 'OFF'})\n"
             f"• Umbral ATR: `{umbral_volatilidad}`\n"
             f"• TP Mult: `{tp_multiplier}` | SL Mult: `{sl_multiplier}`\n\n"
             "Para cambiar un parámetro, escribe:\n"
@@ -156,33 +157,39 @@ def procesar_comando_telegram(comando):
         if len(partes) < 3:
             return "❌ Formato incorrecto. Usa: `set parametro valor`"
         param = partes[1]
-        valor = " ".join(partes[2:])
+        valor_raw = " ".join(partes[2:]).strip()
         try:
             if param == "simbolo":
-                symbol = valor.upper()
+                symbol = valor_raw.upper()
             elif param == "intervalo":
-                intervalo = valor
+                intervalo = valor_raw
             elif param == "riesgo":
-                # Permite ingresar el porcentaje como número entero (ej: 1 para 1%)
-                # Si el valor es >= 1 se interpreta como porcentaje (1 -> 1%), en caso contrario se interpreta como fracción (0.01 -> 1%)
-                riesgo_pct = float(valor) / 100 if float(valor) >= 1 else float(valor)
+                riesgo_pct = float(valor_raw) / 100 if float(valor_raw) >= 1 else float(valor_raw)
             elif param == "bb":
-                bb_length = int(valor)
+                bb_length = int(valor_raw)
             elif param == "bbmult":
-                bb_mult = float(valor)
+                bb_mult = float(valor_raw)
             elif param == "atr":
-                atr_length = int(valor)
+                atr_length = int(valor_raw)
             elif param == "ma":
-                ma_trend_length = int(valor)
+                ma_trend_length = int(valor_raw)
             elif param == "umbral":
-                umbral_volatilidad = float(valor)
+                umbral_volatilidad = float(valor_raw)
             elif param == "tp":
-                tp_multiplier = float(valor)
+                tp_multiplier = float(valor_raw)
             elif param == "sl":
-                sl_multiplier = float(valor)
+                sl_multiplier = float(valor_raw)
+            elif param == "mafilter":
+                v = valor_raw.lower()
+                if v in ("1", "true", "on", "yes"):
+                    usar_ma_trend = True
+                elif v in ("0", "false", "off", "no"):
+                    usar_ma_trend = False
+                else:
+                    return "❌ Valor para mafilter no válido. Usa on/off o 1/0."
             else:
                 return "❌ Parámetro no reconocido."
-            return f"✅ Parámetro `{param}` actualizado a `{valor}`."
+            return f"✅ Parámetro `{param}` actualizado a `{valor_raw}`."
         except Exception as e:
             return f"❌ Error al actualizar: {e}"
 
@@ -312,25 +319,21 @@ def obtener_datos(symbol, intervalo, limite=100):
 
 def calcular_senal(df, umbral=None):
     """
-    Calcula la señal usando Bandas de Bollinger y ATR.
-    Si `umbral` es None usa la variable global `umbral_volatilidad`.
-    Usa los globals bb_length y bb_mult para las BB y atr_length para el ATR.
+    Calcula la señal usando Bandas de Bollinger, ATR y (opcional) filtro MA de tendencia.
     """
-    global bb_length, bb_mult, atr_length, umbral_volatilidad
+    global bb_length, bb_mult, atr_length, umbral_volatilidad, usar_ma_trend, ma_trend_length
 
     if umbral is None:
         umbral = umbral_volatilidad
 
-    # Evitar modificar DataFrame original fuera de alcance (opcional)
-    # df = df.copy()
-
-    # Bandas de Bollinger usando los parámetros globales
-    df['ma'] = df['close'].rolling(window=bb_length).mean()
+    df = df.copy()
+    # Bandas BB
+    df['ma_bb'] = df['close'].rolling(window=bb_length).mean()
     df['std'] = df['close'].rolling(window=bb_length).std()
-    df['upper'] = df['ma'] + bb_mult * df['std']
-    df['lower'] = df['ma'] - bb_mult * df['std']
+    df['upper'] = df['ma_bb'] + bb_mult * df['std']
+    df['lower'] = df['ma_bb'] - bb_mult * df['std']
 
-    # ATR usando la función que maneja su propio periodo (por defecto atr_length)
+    # ATR
     df['prev_close'] = df['close'].shift(1)
     df['tr1'] = df['high'] - df['low']
     df['tr2'] = (df['high'] - df['prev_close']).abs()
@@ -338,7 +341,7 @@ def calcular_senal(df, umbral=None):
     df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
     df['atr'] = df['tr'].rolling(window=atr_length).mean()
 
-    if len(df) < max(bb_length, atr_length) + 1:
+    if len(df) < max(bb_length, atr_length, ma_trend_length) + 1:
         return 'neutral'
 
     close_now = df['close'].iloc[-1]
@@ -351,9 +354,17 @@ def calcular_senal(df, umbral=None):
 
     filtro_volatilidad = (atr_now < umbral)
 
-    if close_prev <= upper_prev and close_now > upper_now and filtro_volatilidad:
+    # filtro MA de tendencia (opcional)
+    if usar_ma_trend:
+        ma_trend = df['close'].rolling(window=ma_trend_length).mean().iloc[-1]
+        filtro_trend_long = close_now > ma_trend
+        filtro_trend_short = close_now < ma_trend
+    else:
+        filtro_trend_long = filtro_trend_short = True
+
+    if close_prev <= upper_prev and close_now > upper_now and filtro_volatilidad and filtro_trend_long:
         return 'long'
-    elif close_prev >= lower_prev and close_now < lower_now and filtro_volatilidad:
+    elif close_prev >= lower_prev and close_now < lower_now and filtro_volatilidad and filtro_trend_short:
         return 'short'
     else:
         return 'neutral'
@@ -950,6 +961,7 @@ if __name__ == "__main__":
     print("   • 'consultar' - Muestra los últimos mensajes")
     print("   • 'finalizar' - Detiene el bot de trading")
     print("   • 'estado' - Muestra el estado actual")
+    print(f"   • 'mafilter' - Filtro MA tendencia: {'ON' if usar_ma_trend else 'OFF'} (usa: set mafilter on/off)")
     
     # Iniciar el bot de control de Telegram
     bot_telegram_control()
