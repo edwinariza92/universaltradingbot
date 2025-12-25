@@ -12,27 +12,46 @@ import sys
 import threading
 import queue
 import json
+from requests.exceptions import ConnectionError, Timeout
 
 # ======== CONFIGURACIÓN ========
 api_key = 'Lw3sQdyAZcEJ2s522igX6E28ZL629ZL5JJ9UaqLyM7PXeNRLDu30LmPYFNJ4ixAx'
 api_secret = 'Adw4DXL2BI9oS4sCJlS3dlBeoJQo6iPezmykfL1bhhm0NQe7aTHpaWULLQ0dYOIt'
-symbol = 'APEUSDT'
+symbol = 'DOGEUSDT'
 intervalo = '30m'
 riesgo_pct = 0.01  # 1% de riesgo por operación
 umbral_volatilidad = 0.02  # ATR máximo permitido para operar
-bb_length = 20  # Periodo por defecto para Bandas de Bollinger
-bb_mult = 3.1  # Multiplicador por defecto para Bandas de Bollinger
+bb_length = 22  # Periodo por defecto para Bandas de Bollinger
+bb_mult = 3.3  # Multiplicador por defecto para Bandas de Bollinger
 atr_length = 3  # Periodo por defecto para ATR
 ma_trend_length = 50  # Periodo por defecto para MA de tendencia
-tp_multiplier = 3.1  # Multiplicador por defecto para Take Profit
-sl_multiplier = 2  # Multiplicador por defecto para Stop Loss
+tp_multiplier = 3.3  # Multiplicador por defecto para Take Profit
+sl_multiplier = 1.6  # Multiplicador por defecto para Stop Loss
 usar_ma_trend = False  # Nuevo: usar filtro MA de tendencia (False por defecto)
 # ===============================
 
-client = Client(api_key, api_secret)
+def api_call_with_retry(func, *args, **kwargs):
+    """Ejecuta una llamada a la API con reintentos en caso de errores de conexión"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except (ConnectionError, Timeout) as e:
+            if attempt < max_retries - 1:
+                log_consola(f"Error de conexión en API call (intento {attempt+1}/{max_retries}): {e}, reintentando en 10 segundos...")
+                time.sleep(10)
+            else:
+                log_consola(f"Error de conexión persistente en API call: {e}")
+                raise e
+        except Exception as e:
+            # Para otros errores, no reintentar
+            log_consola(f"Error en API call: {e}")
+            raise e
+
+client = Client(api_key, api_secret, requests_params={'timeout': 30})
 client.API_URL = 'https://fapi.binance.com/fapi'  # FUTUROS
 
-TELEGRAM_TOKEN = '8446826605:AAEzABJ6KXtB_5fh85B07eMlXuP-IE8UiHk'
+TELEGRAM_TOKEN = '8446826605:AAEzABJ6KXtB_5fh85B07eMlXuP-IE8UiHk' 
 TELEGRAM_CHAT_ID = '1715798949'
 
 # === Variables de control del bot ===
@@ -41,6 +60,8 @@ bot_thread = None
 mensajes_consola = queue.Queue(maxsize=50)  # Cola para almacenar mensajes de consola
 ultimo_mensaje_consola = "Bot no iniciado"
 registro_lock = threading.Lock()  # Lock para proteger escritura del CSV
+ultimo_tp = None  # Para almacenar el TP de la última operación
+ultimo_sl = None  # Para almacenar el SL de la última operación
 # ===================================
 
 def enviar_telegram(mensaje):
@@ -133,7 +154,7 @@ def procesar_comando_telegram(comando):
                 f"• MA Tendencia: {ma_trend_length} ({'ON' if usar_ma_trend else 'OFF'})\n"
                 f"• Umbral ATR: {umbral_volatilidad}\n"
                 f"• TP Mult: {tp_multiplier} | SL Mult: {sl_multiplier}\n"
-                "v22.10.25")
+                "v24.12.25")
 
     elif comando == "configurar":
         return (
@@ -308,7 +329,7 @@ def manejar_excepcion(func):
     return wrapper
 
 def obtener_datos(symbol, intervalo, limite=100):
-    klines = client.futures_klines(symbol=symbol, interval=intervalo, limit=limite)
+    klines = api_call_with_retry(client.futures_klines, symbol=symbol, interval=intervalo, limit=limite)
     df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume',
                                        'close_time', 'quote_asset_volume', 'number_of_trades',
                                        'taker_buy_base', 'taker_buy_quote', 'ignore'])
@@ -402,7 +423,7 @@ def ejecutar_orden(senal, symbol, cantidad, reintentos=5, espera=1):
     try:
         side = SIDE_BUY if senal == 'long' else SIDE_SELL
         try:
-            orden = client.futures_create_order(
+            orden = api_call_with_retry(client.futures_create_order,
                 symbol=symbol,
                 side=side,
                 type=ORDER_TYPE_MARKET,
@@ -416,7 +437,7 @@ def ejecutar_orden(senal, symbol, cantidad, reintentos=5, espera=1):
         for _ in range(reintentos):
             time.sleep(espera)
             try:
-                info_pos = client.futures_position_information(symbol=symbol)
+                info_pos = api_call_with_retry(client.futures_position_information, symbol=symbol)
             except Exception as e:
                 log_consola(f"❌ Error consultando posición tras orden: {e}")
                 continue
@@ -450,7 +471,7 @@ def registrar_operacion(fecha, tipo, precio_entrada, cantidad, tp, sl, resultado
             writer.writerow([fecha, symbol, tipo, precio_entrada, cantidad, tp, sl, resultado if resultado else "", pnl if pnl is not None else ""])
 
 def obtener_precisiones(symbol):
-    info = client.futures_exchange_info()
+    info = api_call_with_retry(client.futures_exchange_info)
     cantidad_decimales = 3
     precio_decimales = 3
     for s in info['symbols']:
@@ -489,7 +510,7 @@ def notificar_pnl(symbol, tiempo_minimo=None, espera_segundos=6):
     """
     try:
         time.sleep(espera_segundos)
-        trades = client.futures_account_trades(symbol=symbol)
+        trades = api_call_with_retry(client.futures_account_trades, symbol=symbol)
         if not trades:
             return None, None, None
         # Filtrar trades con realizedPnl distinto de 0
@@ -517,6 +538,8 @@ def ejecutar_bot_trading():
     datos_ultima_operacion = {}
     hubo_posicion_abierta = False
     tiempo_ultima_apertura = None
+    ultimo_tp = None
+    ultimo_sl = None
     perdidas_consecutivas = 0  # Al inicio de ejecutar_bot_trading
 
     # Notificar inicio del bot
@@ -532,7 +555,9 @@ def ejecutar_bot_trading():
                 time.sleep(60)
                 continue
 
-            info_pos = client.futures_position_information(symbol=symbol)
+            precio_actual = df['close'].iloc[-1]
+
+            info_pos = api_call_with_retry(client.futures_position_information, symbol=symbol)
             if not info_pos:
                 log_consola("Sin posición abierta.")
                 pos_abierta = 0.0
@@ -544,6 +569,44 @@ def ejecutar_bot_trading():
                 else:
                     log_consola("Sin posición abierta.")
 
+            # --- CHECK FOR EXIT IF POSITION OPEN ---
+            if pos_abierta != 0 and ultimo_tp is not None and ultimo_sl is not None:
+                cerrar_posicion = False
+                if pos_abierta > 0:  # long
+                    if precio_actual >= ultimo_tp:
+                        resultado_cierre = "TP"
+                        cerrar_posicion = True
+                    elif precio_actual <= ultimo_sl:
+                        resultado_cierre = "SL"
+                        cerrar_posicion = True
+                elif pos_abierta < 0:  # short
+                    if precio_actual <= ultimo_tp:
+                        resultado_cierre = "TP"
+                        cerrar_posicion = True
+                    elif precio_actual >= ultimo_sl:
+                        resultado_cierre = "SL"
+                        cerrar_posicion = True
+
+                if cerrar_posicion:
+                    try:
+                        side_cierre = 'SELL' if pos_abierta > 0 else 'BUY'
+                        order = api_call_with_retry(client.futures_create_order,
+                            symbol=symbol,
+                            side=side_cierre,
+                            type='MARKET',
+                            quantity=abs(pos_abierta),
+                            reduceOnly=True
+                        )
+                        log_consola(f"🚪 Cerrando posición por {resultado_cierre}: precio {precio_actual:.4f}")
+                        enviar_telegram(f"🚪 Posición cerrada en {symbol} por {resultado_cierre} a precio {precio_actual:.4f}")
+                        # Reset for closure processing
+                        ultima_posicion_cerrada = False
+                        tiempo_ultima_apertura = time.time()
+                    except Exception as e:
+                        log_consola(f"❌ Error al cerrar posición: {e}")
+                        enviar_error_telegram(e, "Cerrar posición")
+                    continue  # Skip to next iteration to process closure
+
             # --- 1. PROCESAR CIERRE SI HAY UNO PENDIENTE ---
             tiempo_actual = time.time()
             if (pos_abierta == 0 and 
@@ -554,7 +617,7 @@ def ejecutar_bot_trading():
                 (tiempo_actual - tiempo_ultima_apertura) > 10):
 
                 time.sleep(8)  # Aumenta el delay si es necesario
-                trades = client.futures_account_trades(symbol=symbol)
+                trades = api_call_with_retry(client.futures_account_trades, symbol=symbol)
                 # Filtra solo los trades de cierre reales
                 trades_cierre = [t for t in trades if float(t.get('realizedPnl', 0)) != 0 and int(t['time'])/1000 > tiempo_ultima_apertura]
                 if trades_cierre:
@@ -613,11 +676,11 @@ def ejecutar_bot_trading():
 
                     # Intentar cancelar TODAS las órdenes pendientes para este símbolo (TP/SL u otras)
                     try:
-                        ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
+                        ordenes_abiertas = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
                         canceladas = 0
                         for orden in ordenes_abiertas:
                             try:
-                                client.futures_cancel_order(symbol=symbol, orderId=orden['orderId'])
+                                api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
                                 canceladas += 1
                             except Exception as e:
                                 log_consola(f"❌ Error al cancelar orden {orden.get('orderId')}: {e}")
@@ -643,6 +706,8 @@ def ejecutar_bot_trading():
                     datos_ultima_operacion = {}
                     hubo_posicion_abierta = False
                     tiempo_ultima_apertura = None
+                    ultimo_tp = None
+                    ultimo_sl = None
                     bot_activo = False
                     break
                 else:
@@ -661,22 +726,12 @@ def ejecutar_bot_trading():
                 datos_ultima_operacion = {}
                 hubo_posicion_abierta = False
                 tiempo_ultima_apertura = None
+                ultimo_tp = None
+                ultimo_sl = None
 
             # --- 2. SOLO SI NO HAY CIERRE PENDIENTE, PROCESA NUEVA SEÑAL ---
             senal = calcular_senal(df)
             log_consola(f"Señal detectada: {senal.upper()}")
-
-            # Cancelar órdenes TP/SL pendientes si no hay posición abierta
-            if pos_abierta == 0:
-                ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
-                for orden in ordenes_abiertas:
-                    if orden['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
-                        try:
-                            client.futures_cancel_order(symbol=symbol, orderId=orden['orderId'])
-                            log_consola(f"🗑️ Orden pendiente cancelada: {orden['type']}")
-                        except Exception as e:
-                            log_consola(f"❌ Error al cancelar orden pendiente: {e}")
-                            enviar_error_telegram(e, "Cancelar orden pendiente")
 
             # Evitar duplicar posiciones en la misma dirección
             if (senal == 'long' and pos_abierta > 0) or (senal == 'short' and pos_abierta < 0):
@@ -691,7 +746,7 @@ def ejecutar_bot_trading():
                     time.sleep(60)
                     continue
 
-                balance = client.futures_account_balance()
+                balance = api_call_with_retry(client.futures_account_balance)
                 saldo_usdt = next((float(b['balance']) for b in balance if b['asset'] == 'USDT'), 0)
 
                 precio_actual = float(df['close'].iloc[-1])
@@ -738,55 +793,8 @@ def ejecutar_bot_trading():
                         "tp": tp,
                         "sl": sl
                     }
-                    # Cancelar órdenes TP/SL abiertas antes de crear nuevas
-                    ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
-                    for orden in ordenes_abiertas:
-                        if orden['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
-                            try:
-                                client.futures_cancel_order(symbol=symbol, orderId=orden['orderId'])
-                            except Exception as e:
-                                log_consola(f"❌ Error al cancelar orden previa: {e}")
-                                enviar_error_telegram(e, "Cancelar orden previa")
-
-                    # Crear TP/SL según la dirección de la señal
-                    try:
-                        if senal == 'long':
-                            client.futures_create_order(
-                                symbol=symbol,
-                                side='SELL',
-                                type='TAKE_PROFIT_MARKET',
-                                stopPrice=tp,
-                                quantity=cantidad_real,
-                                reduceOnly=True
-                            )
-                            client.futures_create_order(
-                                symbol=symbol,
-                                side='SELL',
-                                type='STOP_MARKET',
-                                stopPrice=sl,
-                                quantity=cantidad_real,
-                                reduceOnly=True
-                            )
-                        else:
-                            client.futures_create_order(
-                                symbol=symbol,
-                                side='BUY',
-                                type='TAKE_PROFIT_MARKET',
-                                stopPrice=tp,
-                                quantity=cantidad_real,
-                                reduceOnly=True
-                            )
-                            client.futures_create_order(
-                                symbol=symbol,
-                                side='BUY',
-                                type='STOP_MARKET',
-                                stopPrice=sl,
-                                quantity=cantidad_real,
-                                reduceOnly=True
-                            )
-                    except Exception as e:
-                        log_consola(f"❌ Error al crear TP/SL: {e}")
-                        enviar_error_telegram(e, "Crear TP/SL")
+                    ultimo_tp = tp
+                    ultimo_sl = sl
 
                     log_consola(f"✅ Orden {senal.upper()} ejecutada correctamente.")
                     log_consola(f"🎯 Take Profit: {tp:.4f} | 🛑 Stop Loss: {sl:.4f}")
@@ -880,7 +888,7 @@ def cancelar_operaciones(symbol):
     """Cancela la posición abierta y todas las órdenes TP/SL pendientes"""
     mensajes = []
     # 1. Cerrar posición abierta
-    info_pos = client.futures_position_information(symbol=symbol)
+    info_pos = api_call_with_retry(client.futures_position_information, symbol=symbol)
     if info_pos and float(info_pos[0]['positionAmt']) != 0:
         position_amt = float(info_pos[0]['positionAmt'])
         cantidad = abs(position_amt)
@@ -888,7 +896,7 @@ def cancelar_operaciones(symbol):
         side = SIDE_SELL if position_amt > 0 else SIDE_BUY
         try:
             # Ejecutar cierre de mercado
-            client.futures_create_order(
+            api_call_with_retry(client.futures_create_order,
                 symbol=symbol,
                 side=side,
                 type=ORDER_TYPE_MARKET,
@@ -905,7 +913,7 @@ def cancelar_operaciones(symbol):
         try:
             if cantidad:
                 time.sleep(6)  # esperar a que Binance registre el trade
-                trades = client.futures_account_trades(symbol=symbol)
+                trades = api_call_with_retry(client.futures_account_trades, symbol=symbol)
                 # Filtrar trades con realizedPnl distinto de 0 (trades de cierre)
                 trades_cierre = [t for t in trades if float(t.get('realizedPnl', 0)) != 0]
                 if trades_cierre:
@@ -935,12 +943,12 @@ def cancelar_operaciones(symbol):
 
     # 2. Cancelar órdenes TP/SL pendientes
     try:
-        ordenes_abiertas = client.futures_get_open_orders(symbol=symbol)
+        ordenes_abiertas = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
         canceladas = 0
         for orden in ordenes_abiertas:
             if orden['type'] in ['STOP_MARKET', 'TAKE_PROFIT_MARKET']:
                 try:
-                    client.futures_cancel_order(symbol=symbol, orderId=orden['orderId'])
+                    api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
                     canceladas += 1
                 except Exception as e:
                     mensajes.append(f"❌ Error al cancelar orden {orden['type']}: {e}")
@@ -955,7 +963,7 @@ def cancelar_operaciones(symbol):
 
 # ============ INICIO DEL PROGRAMA ============
 if __name__ == "__main__":
-    print("🤖 Bot de Control SPKUSDT iniciado")
+    print("🤖 Bot de Control iniciado")
     print("📱 Envía comandos por Telegram:")
     print("   • 'iniciar' - Inicia el bot de trading")
     print("   • 'consultar' - Muestra los últimos mensajes")
