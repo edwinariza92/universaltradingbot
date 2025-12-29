@@ -539,59 +539,25 @@ def calcular_atr(df, periodo=14):
     df['atr'] = df['tr'].rolling(window=periodo).mean()
     return df['atr'].iloc[-1]
 
-def calcular_kelly_fraction():
+def crear_orden_oco(symbol, side, quantity, tp_price, sl_price):
     """
-    Calcula la fracción Kelly basada en el registro de operaciones.
-    Retorna la fracción Kelly o 0 si no hay suficientes datos.
+    Crea una orden OCO (One Cancels Other) para Take Profit y Stop Loss.
     """
-    archivo = 'registro_operaciones.csv'
-    if not os.path.exists(archivo):
-        return 0.0
-
     try:
-        df = pd.read_csv(archivo)
-        if df.empty or len(df) < 10:  # Mínimo 10 operaciones para estadísticas confiables
-            return 0.0
-
-        # Filtrar operaciones con resultado válido
-        df_valid = df[df['Resultado'].isin(['TP', 'SL'])]
-
-        if len(df_valid) < 10:
-            return 0.0
-
-        # Calcular win rate (p)
-        ganadoras = df_valid['Resultado'].eq('TP').sum()
-        total = len(df_valid)
-        p = ganadoras / total
-        q = 1 - p
-
-        # Calcular ratio b (promedio ganancia / promedio pérdida)
-        ganancias = df_valid[df_valid['Resultado'] == 'TP']['PnL']
-        perdidas = df_valid[df_valid['Resultado'] == 'SL']['PnL'].abs()  # Abs para pérdidas positivas
-
-        if ganancias.empty or perdidas.empty:
-            return 0.0
-
-        avg_win = ganancias.mean()
-        avg_loss = perdidas.mean()
-
-        if avg_loss == 0:
-            return 0.0
-
-        b = avg_win / avg_loss
-
-        # Fórmula Kelly
-        kelly = (b * p - q) / b if b > 0 else 0.0
-
-        # Aplicar fracción (half-Kelly por defecto)
-        kelly_ajustado = kelly * kelly_fraction
-
-        # Limitar a riesgo máximo
-        return min(kelly_ajustado, riesgo_max_kelly)
-
+        order = api_call_with_retry(client.futures_create_oco_order,
+            symbol=symbol,
+            side=side,  # 'SELL' para long, 'BUY' para short
+            quantity=quantity,
+            price=round(tp_price, obtener_precisiones(symbol)[1]),  # TP price
+            stopPrice=round(sl_price, obtener_precisiones(symbol)[1]),  # SL price
+            stopLimitPrice=round(sl_price, obtener_precisiones(symbol)[1]),  # SL limit price
+            stopLimitTimeInForce='GTC'
+        )
+        log_consola(f"✅ Orden OCO creada: TP={tp_price:.4f}, SL={sl_price:.4f}")
+        return order
     except Exception as e:
-        log_consola(f"❌ Error calculando Kelly: {e}")
-        return 0.0
+        log_consola(f"❌ Error creando orden OCO: {e}")
+        return None
 
 # ============ FUNCIÓN PRINCIPAL DEL BOT ============
     """
@@ -669,44 +635,6 @@ def ejecutar_bot_trading():
                     log_consola(f"Posición actual: cantidad={posicion['positionAmt']}, precio entrada={posicion['entryPrice']}, PnL={posicion['unRealizedProfit']}")
                 else:
                     log_consola("Sin posición abierta.")
-
-            # --- CHECK FOR EXIT IF POSITION OPEN ---
-            if pos_abierta != 0 and ultimo_tp is not None and ultimo_sl is not None:
-                cerrar_posicion = False
-                if pos_abierta > 0:  # long
-                    if precio_actual >= ultimo_tp:
-                        resultado_cierre = "TP"
-                        cerrar_posicion = True
-                    elif precio_actual <= ultimo_sl:
-                        resultado_cierre = "SL"
-                        cerrar_posicion = True
-                elif pos_abierta < 0:  # short
-                    if precio_actual <= ultimo_tp:
-                        resultado_cierre = "TP"
-                        cerrar_posicion = True
-                    elif precio_actual >= ultimo_sl:
-                        resultado_cierre = "SL"
-                        cerrar_posicion = True
-
-                if cerrar_posicion:
-                    try:
-                        side_cierre = 'SELL' if pos_abierta > 0 else 'BUY'
-                        order = api_call_with_retry(client.futures_create_order,
-                            symbol=symbol,
-                            side=side_cierre,
-                            type='MARKET',
-                            quantity=abs(pos_abierta),
-                            reduceOnly=True
-                        )
-                        log_consola(f"🚪 Cerrando posición por {resultado_cierre}: precio {precio_actual:.4f}")
-                        enviar_telegram(f"🚪 Posición cerrada en {symbol} por {resultado_cierre} a precio {precio_actual:.4f}")
-                        # Reset for closure processing
-                        ultima_posicion_cerrada = False
-                        tiempo_ultima_apertura = time.time()
-                    except Exception as e:
-                        log_consola(f"❌ Error al cerrar posición: {e}")
-                        enviar_error_telegram(e, "Cerrar posición")
-                    continue  # Skip to next iteration to process closure
 
             # --- 1. PROCESAR CIERRE SI HAY UNO PENDIENTE ---
             tiempo_actual = time.time()
@@ -928,6 +856,26 @@ def ejecutar_bot_trading():
                 precio_entrada, cantidad_real = ejecutar_orden(senal, symbol, cantidad)
 
                 if precio_entrada:
+                    # Crear orden OCO para TP/SL
+                    side_oco = 'SELL' if senal == 'long' else 'BUY'
+                    oco_order = crear_orden_oco(symbol, side_oco, cantidad_real, tp, sl)
+                    if oco_order is None:
+                        # Si falla crear OCO, cerrar la posición inmediatamente
+                        log_consola("❌ Falló crear OCO, cerrando posición...")
+                        try:
+                            close_side = 'SELL' if senal == 'long' else 'BUY'
+                            api_call_with_retry(client.futures_create_order,
+                                symbol=symbol,
+                                side=close_side,
+                                type='MARKET',
+                                quantity=cantidad_real,
+                                reduceOnly=True
+                            )
+                            log_consola("✅ Posición cerrada por fallo en OCO.")
+                        except Exception as e:
+                            log_consola(f"❌ Error cerrando posición tras fallo OCO: {e}")
+                        continue
+
                     ultima_posicion_cerrada = False
                     hubo_posicion_abierta = True
                     tiempo_ultima_apertura = time.time()
@@ -941,7 +889,7 @@ def ejecutar_bot_trading():
                     ultimo_tp = tp
                     ultimo_sl = sl
 
-                    log_consola(f"✅ Orden {senal.upper()} ejecutada correctamente.")
+                    log_consola(f"✅ Orden {senal.upper()} ejecutada correctamente con OCO.")
                     log_consola(f"🎯 Take Profit: {tp:.4f} | 🛑 Stop Loss: {sl:.4f}")
                     enviar_telegram(f"✅ Orden {senal.upper()} ejecutada a {precio_entrada}.\nTP: {tp} | SL: {sl}")
                 else:
