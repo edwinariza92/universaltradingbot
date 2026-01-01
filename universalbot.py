@@ -586,6 +586,70 @@ def crear_orden_oco(symbol, side, quantity, tp_price, sl_price):
         log_consola(f"❌ Error obteniendo PnL: {e}")
         return None, None, None
 
+def calcular_kelly_fraction():
+    """Calcula la fracción de Kelly basada en el historial de operaciones"""
+    archivo = 'registro_operaciones.csv'
+    if not os.path.exists(archivo):
+        return 0.0
+
+    profits = []
+    try:
+        with open(archivo, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row.get('Resultado', '').strip() in ['SL', 'TP']:
+                    tipo = row['Tipo']
+                    precio_entrada = float(row['Precio Entrada'])
+                    cantidad = float(row['Cantidad'])
+                    take_profit = float(row['Take Profit'])
+                    stop_loss = float(row['Stop Loss'])
+                    resultado = row['Resultado']
+
+                    if resultado == 'TP':
+                        precio_salida = take_profit
+                    elif resultado == 'SL':
+                        precio_salida = stop_loss
+                    else:
+                        continue
+
+                    if tipo == 'long':
+                        profit = (precio_salida - precio_entrada) * cantidad
+                    elif tipo == 'short':
+                        profit = (precio_entrada - precio_salida) * cantidad
+                    else:
+                        continue
+
+                    profits.append(profit)
+    except Exception as e:
+        log_consola(f"Error leyendo registro para Kelly: {e}")
+        return 0.0
+
+    if len(profits) < 10:  # Necesitamos al menos 10 operaciones para calcular Kelly
+        return 0.0
+
+    wins = [p for p in profits if p > 0]
+    losses = [p for p in profits if p < 0]
+
+    if not wins or not losses:
+        return 0.0
+
+    p = len(wins) / len(profits)
+    avg_win = np.mean(wins)
+    avg_loss = abs(np.mean(losses))
+    b = avg_win / avg_loss if avg_loss > 0 else 0
+
+    if b <= 0:
+        return 0.0
+
+    kelly = (b * p - (1 - p)) / b
+    kelly = max(0, kelly)  # No negativo
+
+    # Aplicar half-Kelly y límite máximo
+    kelly_ajustado = kelly * kelly_fraction
+    kelly_ajustado = min(kelly_ajustado, riesgo_max_kelly)
+
+    return kelly_ajustado
+
 # ============ FUNCIÓN PRINCIPAL DEL BOT ============
 def ejecutar_bot_trading():
     """Función principal del bot de trading que se ejecuta en un hilo separado"""
