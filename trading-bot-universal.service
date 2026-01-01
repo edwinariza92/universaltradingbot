@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/bots/universal
+WorkingDirectory=/home/ubuntu/bots/bot2/universaltradingbot
 ExecStart=/usr/bin/python3 /home/ubuntu/bots/bot2/universaltradingbot/universalbot.py
 Restart=on-failure
 RestartSec=30
@@ -16,5 +16,4 @@ MemoryLimit=512M
 CPUQuota=50%
 
 [Install]
-WantedBy=multi-user.target</content>
-<parameter name="filePath">c:\Users\ACER\Documents\trading\trading-bot-universal.service
+WantedBy=multi-user.target
