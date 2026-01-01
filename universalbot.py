@@ -29,12 +29,23 @@ tp_multiplier = 3.6  # Multiplicador por defecto para Take Profit
 sl_multiplier = 1.6  # Multiplicador por defecto para Stop Loss
 usar_ma_trend = False  # Nuevo: usar filtro MA de tendencia (False por defecto)
 # Nuevas configuraciones para gestión de riesgos
-drawdown_max_pct = 0.05  # 5% drawdown máximo
-modo_seguro_atr = 0.01  # ATR máximo para modo seguro (baja volatilidad)
 riesgo_dinamico_reduccion = 0.5  # Reducir riesgo a la mitad tras pérdidas consecutivas
 usar_kelly = False  # Activar position sizing basado en Kelly
 kelly_fraction = 0.5  # Usar half-Kelly para reducir riesgo (0.5 = 50% de Kelly)
 riesgo_max_kelly = 0.05  # Máximo riesgo por operación con Kelly (5%)
+# Nuevas configuraciones para indicadores adicionales
+usar_rsi = False  # Activar filtro RSI
+rsi_length = 14  # Periodo para RSI
+rsi_overbought = 70  # Nivel de sobrecompra
+rsi_oversold = 30  # Nivel de sobreventa
+usar_macd = False  # Activar filtro MACD
+macd_fast = 12  # Periodo rápido MACD
+macd_slow = 26  # Periodo lento MACD
+macd_signal = 9  # Periodo señal MACD
+usar_volumen_filtro = False  # Activar filtro de volumen
+volumen_periodos = 20  # Periodos para promedio de volumen
+usar_multitimeframe = False  # Activar confirmación multi-timeframe
+timeframe_superior = '1h'  # Timeframe superior para confirmación
 # ===============================
 
 def api_call_with_retry(func, *args, **kwargs):
@@ -69,9 +80,6 @@ ultimo_mensaje_consola = "Bot no iniciado"
 registro_lock = threading.Lock()  # Lock para proteger escritura del CSV
 ultimo_tp = None  # Para almacenar el TP de la última operación
 ultimo_sl = None  # Para almacenar el SL de la última operación
-# Variables para gestión de riesgos
-saldo_inicial = None  # Saldo inicial al iniciar el bot
-drawdown_actual = 0.0  # Drawdown actual
 # ===================================
 
 def enviar_telegram(mensaje):
@@ -126,7 +134,9 @@ def procesar_comando_telegram(comando):
     """Procesa comandos recibidos por Telegram"""
     global bot_activo, bot_thread
     global symbol, intervalo, riesgo_pct, bb_length, bb_mult, atr_length, ma_trend_length, umbral_volatilidad, tp_multiplier, sl_multiplier, usar_ma_trend
-    global drawdown_max_pct, modo_seguro_atr, riesgo_dinamico_reduccion, usar_kelly, kelly_fraction, riesgo_max_kelly
+    global riesgo_dinamico_reduccion, usar_kelly, kelly_fraction, riesgo_max_kelly
+    global usar_rsi, rsi_length, rsi_overbought, rsi_oversold, usar_macd, macd_fast, macd_slow, macd_signal
+    global usar_volumen_filtro, volumen_periodos, usar_multitimeframe, timeframe_superior
 
     comando = comando.lower().strip()
 
@@ -165,11 +175,13 @@ def procesar_comando_telegram(comando):
                 f"• MA Tendencia: {ma_trend_length} ({'ON' if usar_ma_trend else 'OFF'})\n"
                 f"• Umbral ATR: {umbral_volatilidad}\n"
                 f"• TP Mult: {tp_multiplier} | SL Mult: {sl_multiplier}\n"
-                f"• Drawdown Máx: {drawdown_max_pct*100:.1f}%\n"
-                f"• Modo Seguro ATR: {modo_seguro_atr}\n"
                 f"• Reducción Riesgo Dinámico: {riesgo_dinamico_reduccion}\n"
                 f"• Kelly: {'ON' if usar_kelly else 'OFF'} (Fracción: {kelly_fraction}, Máx: {riesgo_max_kelly*100:.1f}%)\n"
-                "v27.12.25")
+                f"• RSI: {'ON' if usar_rsi else 'OFF'} ({rsi_length}/{rsi_overbought}/{rsi_oversold})\n"
+                f"• MACD: {'ON' if usar_macd else 'OFF'} ({macd_fast}/{macd_slow}/{macd_signal})\n"
+                f"• Volumen Filtro: {'ON' if usar_volumen_filtro else 'OFF'} ({volumen_periodos} períodos)\n"
+                f"• Multi-Timeframe: {'ON' if usar_multitimeframe else 'OFF'} ({timeframe_superior})\n"
+                "v01.01.26")
 
     elif comando == "configurar":
         return (
@@ -183,10 +195,12 @@ def procesar_comando_telegram(comando):
             f"• Periodo MA Tendencia: `{ma_trend_length}` ({'ON' if usar_ma_trend else 'OFF'})\n"
             f"• Umbral ATR: `{umbral_volatilidad}`\n"
             f"• TP Mult: `{tp_multiplier}` | SL Mult: `{sl_multiplier}`\n"
-            f"• Drawdown Máx: `{drawdown_max_pct*100:.1f}%`\n"
-            f"• Modo Seguro ATR: `{modo_seguro_atr}`\n"
             f"• Reducción Riesgo Dinámico: `{riesgo_dinamico_reduccion}`\n"
-            f"• Kelly: `{'ON' if usar_kelly else 'OFF'}` (Fracción: `{kelly_fraction}`, Máx: `{riesgo_max_kelly*100:.1f}%`)\n\n"
+            f"• Kelly: `{'ON' if usar_kelly else 'OFF'}` (Fracción: `{kelly_fraction}`, Máx: `{riesgo_max_kelly*100:.1f}%`)\n"
+            f"• RSI: `{'ON' if usar_rsi else 'OFF'}` ({rsi_length}/{rsi_overbought}/{rsi_oversold})\n"
+            f"• MACD: `{'ON' if usar_macd else 'OFF'}` ({macd_fast}/{macd_slow}/{macd_signal})\n"
+            f"• Volumen Filtro: `{'ON' if usar_volumen_filtro else 'OFF'}` ({volumen_periodos} períodos)\n"
+            f"• Multi-Timeframe: `{'ON' if usar_multitimeframe else 'OFF'}` ({timeframe_superior})\n\n"
             "Para cambiar un parámetro, escribe:\n"
             "`set parametro valor`\n"
             "Ejemplo: `set simbolo BTCUSDT`"
@@ -219,18 +233,6 @@ def procesar_comando_telegram(comando):
                 tp_multiplier = float(valor_raw)
             elif param == "sl":
                 sl_multiplier = float(valor_raw)
-            elif param == "mafilter":
-                v = valor_raw.lower()
-                if v in ("1", "true", "on", "yes"):
-                    usar_ma_trend = True
-                elif v in ("0", "false", "off", "no"):
-                    usar_ma_trend = False
-                else:
-                    return "❌ Valor para mafilter no válido. Usa on/off o 1/0."
-            elif param == "drawdownmax":
-                drawdown_max_pct = float(valor_raw) / 100 if float(valor_raw) >= 1 else float(valor_raw)
-            elif param == "modoseguroatr":
-                modo_seguro_atr = float(valor_raw)
             elif param == "riesgodinamico":
                 riesgo_dinamico_reduccion = float(valor_raw)
             elif param == "kelly":
@@ -245,6 +247,54 @@ def procesar_comando_telegram(comando):
                 kelly_fraction = float(valor_raw)
             elif param == "kellymax":
                 riesgo_max_kelly = float(valor_raw) / 100 if float(valor_raw) >= 1 else float(valor_raw)
+            elif param == "rsi":
+                v = valor_raw.lower()
+                if v in ("1", "true", "on", "yes"):
+                    usar_rsi = True
+                elif v in ("0", "false", "off", "no"):
+                    usar_rsi = False
+                else:
+                    return "❌ Valor para rsi no válido. Usa on/off o 1/0."
+            elif param == "rsilength":
+                rsi_length = int(valor_raw)
+            elif param == "rsioverbought":
+                rsi_overbought = int(valor_raw)
+            elif param == "rsioversold":
+                rsi_oversold = int(valor_raw)
+            elif param == "macd":
+                v = valor_raw.lower()
+                if v in ("1", "true", "on", "yes"):
+                    usar_macd = True
+                elif v in ("0", "false", "off", "no"):
+                    usar_macd = False
+                else:
+                    return "❌ Valor para macd no válido. Usa on/off o 1/0."
+            elif param == "macdfast":
+                macd_fast = int(valor_raw)
+            elif param == "macdslow":
+                macd_slow = int(valor_raw)
+            elif param == "macdsignal":
+                macd_signal = int(valor_raw)
+            elif param == "volumenfiltro":
+                v = valor_raw.lower()
+                if v in ("1", "true", "on", "yes"):
+                    usar_volumen_filtro = True
+                elif v in ("0", "false", "off", "no"):
+                    usar_volumen_filtro = False
+                else:
+                    return "❌ Valor para volumenfiltro no válido. Usa on/off o 1/0."
+            elif param == "volumenperiodos":
+                volumen_periodos = int(valor_raw)
+            elif param == "multitimeframe":
+                v = valor_raw.lower()
+                if v in ("1", "true", "on", "yes"):
+                    usar_multitimeframe = True
+                elif v in ("0", "false", "off", "no"):
+                    usar_multitimeframe = False
+                else:
+                    return "❌ Valor para multitimeframe no válido. Usa on/off o 1/0."
+            elif param == "timeframesuperior":
+                timeframe_superior = valor_raw
             else:
                 return "❌ Parámetro no reconocido."
             return f"✅ Parámetro `{param}` actualizado a `{valor_raw}`."
@@ -300,8 +350,10 @@ def procesar_comando_telegram(comando):
 """
 
 def bot_telegram_control():
-    """Bot de Telegram para controlar el bot de trading"""
+    """Bot de Telegram para controlar el bot de trading con mejor manejo de errores"""
     offset = 0
+    errores_consecutivos = 0
+    max_errores_consecutivos = 5
     
     while True:
         try:
@@ -309,9 +361,10 @@ def bot_telegram_control():
             url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
             params = {"offset": offset, "timeout": 30}
             
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, timeout=35)
             if response.status_code == 200:
                 data = response.json()
+                errores_consecutivos = 0  # Resetear contador de errores
                 
                 if data.get("ok") and data.get("result"):
                     for update in data["result"]:
@@ -323,13 +376,35 @@ def bot_telegram_control():
                             
                             # Solo procesar mensajes del chat autorizado
                             if str(chat_id) == TELEGRAM_CHAT_ID:
-                                respuesta = procesar_comando_telegram(texto)
-                                enviar_telegram(respuesta)
+                                try:
+                                    respuesta = procesar_comando_telegram(texto)
+                                    enviar_telegram(respuesta)
+                                except Exception as e:
+                                    log_consola(f"❌ Error procesando comando Telegram: {e}")
+                                    enviar_telegram(f"❌ Error procesando comando: {str(e)}")
             
             time.sleep(1)  # Pequeña pausa para no sobrecargar la API
             
+        except requests.exceptions.Timeout:
+            log_consola("⏰ Timeout en petición a Telegram API")
+            time.sleep(5)
+        except requests.exceptions.ConnectionError as e:
+            errores_consecutivos += 1
+            log_consola(f"🌐 Error de conexión Telegram ({errores_consecutivos}/{max_errores_consecutivos}): {e}")
+            if errores_consecutivos >= max_errores_consecutivos:
+                log_consola("🚨 Demasiados errores de conexión consecutivos. Reiniciando en 30 segundos...")
+                enviar_telegram("🚨 Problemas de conexión con Telegram. Reiniciando bot...")
+                time.sleep(30)
+                # Forzar reinicio del programa
+                os._exit(1)
+            time.sleep(10)
         except Exception as e:
-            log_consola(f"❌ Error en bot de Telegram: {e}")
+            errores_consecutivos += 1
+            log_consola(f"❌ Error en bot de Telegram ({errores_consecutivos}/{max_errores_consecutivos}): {e}")
+            if errores_consecutivos >= max_errores_consecutivos:
+                log_consola("🚨 Demasiados errores consecutivos. Reiniciando...")
+                time.sleep(30)
+                os._exit(1)
             time.sleep(5)
 
 def enviar_error_telegram(error, contexto=""):
@@ -373,13 +448,16 @@ def obtener_datos(symbol, intervalo, limite=100):
     df['close'] = df['close'].astype(float)
     df['high'] = df['high'].astype(float)
     df['low'] = df['low'].astype(float)
-    return df[['close', 'high', 'low']]
+    df['volume'] = df['volume'].astype(float)
+    return df[['close', 'high', 'low', 'volume']]
 
 def calcular_senal(df, umbral=None):
     """
-    Calcula la señal usando Bandas de Bollinger, ATR y (opcional) filtro MA de tendencia.
+    Calcula la señal usando Bandas de Bollinger, ATR, RSI, MACD, volumen y multi-timeframe (opcionales).
     """
     global bb_length, bb_mult, atr_length, umbral_volatilidad, usar_ma_trend, ma_trend_length
+    global usar_rsi, rsi_length, rsi_overbought, rsi_oversold, usar_macd, macd_fast, macd_slow, macd_signal
+    global usar_volumen_filtro, volumen_periodos, usar_multitimeframe, timeframe_superior, symbol, intervalo
 
     if umbral is None:
         umbral = umbral_volatilidad
@@ -399,7 +477,34 @@ def calcular_senal(df, umbral=None):
     df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
     df['atr'] = df['tr'].rolling(window=atr_length).mean()
 
-    if len(df) < max(bb_length, atr_length, ma_trend_length) + 1:
+    # RSI (opcional)
+    if usar_rsi:
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=rsi_length).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_length).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
+
+    # MACD (opcional)
+    if usar_macd:
+        df['ema_fast'] = df['close'].ewm(span=macd_fast).mean()
+        df['ema_slow'] = df['close'].ewm(span=macd_slow).mean()
+        df['macd'] = df['ema_fast'] - df['ema_slow']
+        df['macd_signal'] = df['macd'].ewm(span=macd_signal).mean()
+        df['macd_hist'] = df['macd'] - df['macd_signal']
+
+    # Filtro de volumen (opcional)
+    if usar_volumen_filtro and 'volume' in df.columns:
+        df['volume'] = df['volume'].astype(float)
+        df['volume_avg'] = df['volume'].rolling(window=volumen_periodos).mean()
+
+    min_periods = max(bb_length, atr_length, ma_trend_length)
+    if usar_rsi:
+        min_periods = max(min_periods, rsi_length)
+    if usar_macd:
+        min_periods = max(min_periods, macd_slow + macd_signal)
+
+    if len(df) < min_periods + 1:
         return 'neutral'
 
     close_now = df['close'].iloc[-1]
@@ -420,9 +525,49 @@ def calcular_senal(df, umbral=None):
     else:
         filtro_trend_long = filtro_trend_short = True
 
-    if close_prev <= upper_prev and close_now > upper_now and filtro_volatilidad and filtro_trend_long:
+    # Filtro RSI (opcional)
+    filtro_rsi_long = filtro_rsi_short = True
+    if usar_rsi:
+        rsi_now = df['rsi'].iloc[-1]
+        filtro_rsi_long = rsi_now < rsi_overbought  # No sobrecomprado para long
+        filtro_rsi_short = rsi_now > rsi_oversold   # No sobrevendido para short
+
+    # Filtro MACD (opcional)
+    filtro_macd_long = filtro_macd_short = True
+    if usar_macd:
+        macd_now = df['macd'].iloc[-1]
+        macd_signal_now = df['macd_signal'].iloc[-1]
+        filtro_macd_long = macd_now > macd_signal_now  # MACD arriba de señal para long
+        filtro_macd_short = macd_now < macd_signal_now # MACD abajo de señal para short
+
+    # Filtro de volumen (opcional)
+    filtro_volumen = True
+    if usar_volumen_filtro and 'volume_avg' in df.columns:
+        volume_now = df['volume'].iloc[-1]
+        volume_avg = df['volume_avg'].iloc[-1]
+        filtro_volumen = volume_now > volume_avg
+
+    # Multi-timeframe (opcional)
+    filtro_multitimeframe = True
+    if usar_multitimeframe:
+        try:
+            # Obtener datos del timeframe superior
+            df_superior = obtener_datos(symbol, timeframe_superior, limite=50)
+            if len(df_superior) >= 10:
+                senal_superior = calcular_senal(df_superior, umbral=umbral_volatilidad)
+                filtro_multitimeframe = senal_superior in ['long', 'short']
+        except Exception as e:
+            log_consola(f"⚠️ Error en multi-timeframe: {e}")
+            filtro_multitimeframe = True  # Si falla, permitir la señal
+
+    # Combinar todos los filtros
+    if (close_prev <= upper_prev and close_now > upper_now and
+        filtro_volatilidad and filtro_trend_long and filtro_rsi_long and
+        filtro_macd_long and filtro_volumen and filtro_multitimeframe):
         return 'long'
-    elif close_prev >= lower_prev and close_now < lower_now and filtro_volatilidad and filtro_trend_short:
+    elif (close_prev >= lower_prev and close_now < lower_now and
+          filtro_volatilidad and filtro_trend_short and filtro_rsi_short and
+          filtro_macd_short and filtro_volumen and filtro_multitimeframe):
         return 'short'
     else:
         return 'neutral'
@@ -559,33 +704,6 @@ def crear_orden_oco(symbol, side, quantity, tp_price, sl_price):
         log_consola(f"❌ Error creando orden OCO: {e}")
         return None
 
-# ============ FUNCIÓN PRINCIPAL DEL BOT ============
-    """
-    Retorna (pnl, precio_ejecucion, trade_time) del trade de cierre más probable.
-    - tiempo_minimo: timestamp (segundos) para filtrar trades posteriores.
-    - espera_segundos: tiempo a esperar antes de consultar para que Binance procese el trade.
-    """
-    try:
-        time.sleep(espera_segundos)
-        trades = api_call_with_retry(client.futures_account_trades, symbol=symbol)
-        if not trades:
-            return None, None, None
-        # Filtrar trades con realizedPnl distinto de 0
-        trades_cierre = [t for t in trades if float(t.get('realizedPnl', 0)) != 0]
-        if tiempo_minimo:
-            trades_cierre = [t for t in trades_cierre if int(t['time'])/1000 > tiempo_minimo]
-        if not trades_cierre:
-            return None, None, None
-        ultimo_trade = trades_cierre[-1]
-        pnl = float(ultimo_trade.get('realizedPnl', 0))
-        precio = float(ultimo_trade.get('price', 0))
-        trade_time = int(ultimo_trade['time'])/1000
-        # No enviar notificación aquí si la lógica de notificación la maneja el ciclo principal
-        return pnl, precio, trade_time
-    except Exception as e:
-        log_consola(f"❌ Error obteniendo PnL: {e}")
-        return None, None, None
-
 def calcular_kelly_fraction():
     """Calcula la fracción de Kelly basada en el historial de operaciones"""
     archivo = 'registro_operaciones.csv'
@@ -653,7 +771,7 @@ def calcular_kelly_fraction():
 # ============ FUNCIÓN PRINCIPAL DEL BOT ============
 def ejecutar_bot_trading():
     """Función principal del bot de trading que se ejecuta en un hilo separado"""
-    global bot_activo, saldo_inicial, drawdown_actual
+    global bot_activo
 
     ultima_posicion_cerrada = True
     datos_ultima_operacion = {}
@@ -662,16 +780,6 @@ def ejecutar_bot_trading():
     ultimo_tp = None
     ultimo_sl = None
     perdidas_consecutivas = 0  # Al inicio de ejecutar_bot_trading
-
-    # Obtener saldo inicial y resetear drawdown
-    try:
-        balance = api_call_with_retry(client.futures_account_balance)
-        saldo_inicial = next((float(b['balance']) for b in balance if b['asset'] == 'USDT'), 0)
-        drawdown_actual = 0.0
-        log_consola(f"Saldo inicial: {saldo_inicial} USDT")
-    except Exception as e:
-        log_consola(f"❌ Error obteniendo saldo inicial: {e}")
-        saldo_inicial = None
 
     # Notificar inicio del bot
     enviar_telegram(f"🤖 **Bot {symbol} iniciado**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n📊 Símbolo: {symbol}\n⏱️ Intervalo: {intervalo}")
@@ -845,26 +953,9 @@ def ejecutar_bot_trading():
                 continue
 
             if senal in ['long', 'short'] and pos_abierta == 0:
-                # Calcular drawdown y verificar límite
-                if saldo_inicial:
-                    balance = api_call_with_retry(client.futures_account_balance)
-                    saldo_actual = next((float(b['balance']) for b in balance if b['asset'] == 'USDT'), 0)
-                    drawdown_actual = (saldo_inicial - saldo_actual) / saldo_inicial
-                    if drawdown_actual > drawdown_max_pct:
-                        log_consola(f"⚠️ Drawdown máximo alcanzado ({drawdown_actual*100:.2f}%), pausando bot.")
-                        enviar_telegram(f"⚠️ Drawdown máximo alcanzado ({drawdown_actual*100:.2f}%), bot pausado.")
-                        bot_activo = False
-                        break
-
                 atr = calcular_atr(df)
                 if atr > umbral_volatilidad:
                     log_consola("Mercado demasiado volátil, no se opera.")
-                    time.sleep(60)
-                    continue
-
-                # Modo seguro: operar solo en baja volatilidad
-                if atr > modo_seguro_atr:
-                    log_consola(f"Modo seguro activado: ATR {atr:.4f} > {modo_seguro_atr}, no se opera.")
                     time.sleep(60)
                     continue
 
@@ -1128,5 +1219,19 @@ if __name__ == "__main__":
     print("   • 'estado' - Muestra el estado actual")
     print(f"   • 'mafilter' - Filtro MA tendencia: {'ON' if usar_ma_trend else 'OFF'} (usa: set mafilter on/off)")
     
-    # Iniciar el bot de control de Telegram
-    bot_telegram_control()
+    # Iniciar el bot de control de Telegram en un thread separado
+    telegram_thread = threading.Thread(target=bot_telegram_control, daemon=True)
+    telegram_thread.start()
+    
+    # Mantener el programa principal vivo
+    try:
+        while True:
+            time.sleep(60)  # Verificar cada minuto si los threads están vivos
+            if not telegram_thread.is_alive():
+                log_consola("🚨 Thread de Telegram murió. Reiniciando...")
+                telegram_thread = threading.Thread(target=bot_telegram_control, daemon=True)
+                telegram_thread.start()
+    except KeyboardInterrupt:
+        log_consola("🛑 Programa detenido por usuario")
+        bot_activo = False
+        time.sleep(2)  # Dar tiempo a que el thread termine
