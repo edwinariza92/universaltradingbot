@@ -181,7 +181,7 @@ def procesar_comando_telegram(comando):
                 f"• MACD: {'ON' if usar_macd else 'OFF'} ({macd_fast}/{macd_slow}/{macd_signal})\n"
                 f"• Volumen Filtro: {'ON' if usar_volumen_filtro else 'OFF'} ({volumen_periodos} períodos)\n"
                 f"• Multi-Timeframe: {'ON' if usar_multitimeframe else 'OFF'} ({timeframe_superior})\n"
-                "v01.01.26")
+                "v02.01.26")
 
     elif comando == "configurar":
         return (
@@ -704,6 +704,95 @@ def crear_orden_oco(symbol, side, quantity, tp_price, sl_price):
         log_consola(f"❌ Error creando orden OCO: {e}")
         return None
 
+def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
+    """
+    Crea órdenes TP y SL separadas cuando la OCO falla.
+    Retorna True si ambas órdenes se crearon correctamente, False en caso contrario.
+    """
+    tp_order = None
+    sl_order = None
+    try:
+        cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
+        tp_price_rounded = round(tp_price, precio_decimales)
+        sl_price_rounded = round(sl_price, precio_decimales)
+        
+        # Crear orden de Take Profit
+        try:
+            # Para TAKE_PROFIT_MARKET, usar closePosition=True sin quantity
+            tp_order = api_call_with_retry(client.futures_create_order,
+                symbol=symbol,
+                side=side,
+                type='TAKE_PROFIT_MARKET',
+                stopPrice=tp_price_rounded,
+                closePosition=True
+            )
+            log_consola(f"✅ Orden TP creada: {tp_price_rounded:.4f}")
+        except Exception as e:
+            log_consola(f"❌ Error creando orden TP: {e}")
+            # Intentar con quantity si closePosition falla
+            try:
+                tp_order = api_call_with_retry(client.futures_create_order,
+                    symbol=symbol,
+                    side=side,
+                    type='TAKE_PROFIT_MARKET',
+                    quantity=quantity,
+                    stopPrice=tp_price_rounded
+                )
+                log_consola(f"✅ Orden TP creada (con quantity): {tp_price_rounded:.4f}")
+            except Exception as e2:
+                log_consola(f"❌ Error creando orden TP (intento con quantity): {e2}")
+                return False
+        
+        # Crear orden de Stop Loss
+        try:
+            # Para STOP_MARKET, usar closePosition=True sin quantity
+            sl_order = api_call_with_retry(client.futures_create_order,
+                symbol=symbol,
+                side=side,
+                type='STOP_MARKET',
+                stopPrice=sl_price_rounded,
+                closePosition=True
+            )
+            log_consola(f"✅ Orden SL creada: {sl_price_rounded:.4f}")
+        except Exception as e:
+            log_consola(f"❌ Error creando orden SL: {e}")
+            # Intentar cancelar la orden TP si se creó pero falló el SL
+            if tp_order:
+                try:
+                    api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=tp_order['orderId'])
+                    log_consola("🗑️ Orden TP cancelada debido a error en SL")
+                except:
+                    pass
+            # Intentar con quantity si closePosition falla
+            try:
+                sl_order = api_call_with_retry(client.futures_create_order,
+                    symbol=symbol,
+                    side=side,
+                    type='STOP_MARKET',
+                    quantity=quantity,
+                    stopPrice=sl_price_rounded
+                )
+                log_consola(f"✅ Orden SL creada (con quantity): {sl_price_rounded:.4f}")
+            except Exception as e2:
+                log_consola(f"❌ Error creando orden SL (intento con quantity): {e2}")
+                return False
+        
+        return True
+    except Exception as e:
+        log_consola(f"❌ Error inesperado creando órdenes TP/SL separadas: {e}")
+        # Intentar limpiar órdenes creadas si hay error
+        if tp_order:
+            try:
+                api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=tp_order['orderId'])
+            except:
+                pass
+        if sl_order:
+            try:
+                api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=sl_order['orderId'])
+            except:
+                pass
+        return False
+
 def calcular_kelly_fraction():
     """Calcula la fracción de Kelly basada en el historial de operaciones"""
     archivo = 'registro_operaciones.csv'
@@ -810,13 +899,23 @@ def ejecutar_bot_trading():
 
             # --- 1. PROCESAR CIERRE SI HAY UNO PENDIENTE ---
             tiempo_actual = time.time()
-            if (pos_abierta == 0 and 
+            # Verificar que realmente no hay posición abierta (doble verificación)
+            pos_abierta_verificada = 0.0
+            try:
+                info_pos_verificacion = api_call_with_retry(client.futures_position_information, symbol=symbol)
+                if info_pos_verificacion:
+                    pos_abierta_verificada = float(info_pos_verificacion[0]['positionAmt'])
+            except:
+                pos_abierta_verificada = pos_abierta  # Usar el valor anterior si falla la verificación
+            
+            if (pos_abierta == 0 and pos_abierta_verificada == 0 and 
                 not ultima_posicion_cerrada and 
                 datos_ultima_operacion and 
                 hubo_posicion_abierta and
                 tiempo_ultima_apertura and
                 (tiempo_actual - tiempo_ultima_apertura) > 10):
 
+                log_consola("🔍 Detectando cierre de posición...")
                 time.sleep(8)  # Aumenta el delay si es necesario
                 trades = api_call_with_retry(client.futures_account_trades, symbol=symbol)
                 # Filtra solo los trades de cierre reales
@@ -832,16 +931,34 @@ def ejecutar_bot_trading():
                     trade_time = int(ultimo_trade['time']) / 1000
                     if trade_time > tiempo_ultima_apertura:
                         precio_entrada = datos_ultima_operacion["precio_entrada"]
+                        cantidad = datos_ultima_operacion["cantidad_real"]
+                        
                         if pnl > 0:
                             resultado = "TP"
-                            enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia: {pnl:.4f} USDT")
+                            mensaje = f"🎉 **Take Profit alcanzado en {symbol}**\n"
+                            mensaje += f"💰 Ganancia: {pnl:.4f} USDT\n"
+                            mensaje += f"📊 Precio entrada: {precio_entrada:.4f}\n"
+                            mensaje += f"📊 Precio salida: {precio_ejecucion:.4f}\n"
+                            mensaje += f"📦 Cantidad: {cantidad}\n"
+                            mensaje += f"🎯 TP objetivo: {tp:.4f}"
+                            enviar_telegram(mensaje)
                         elif pnl < 0:
                             resultado = "SL"
-                            enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida: {pnl:.4f} USDT")
+                            mensaje = f"⚠️ **Stop Loss alcanzado en {symbol}**\n"
+                            mensaje += f"📉 Pérdida: {pnl:.4f} USDT\n"
+                            mensaje += f"📊 Precio entrada: {precio_entrada:.4f}\n"
+                            mensaje += f"📊 Precio salida: {precio_ejecucion:.4f}\n"
+                            mensaje += f"📦 Cantidad: {cantidad}\n"
+                            mensaje += f"🛑 SL objetivo: {sl:.4f}"
+                            enviar_telegram(mensaje)
                         else:
                             resultado = "NEUTRAL"
-                            enviar_telegram(f"🔔 Posición cerrada en {symbol}. PnL: {pnl:.4f} USDT")
-                        log_consola(f"📊 Detalles del cierre: Precio entrada={precio_entrada:.4f}, Precio ejecución={precio_ejecucion:.4f}, {resultado}")
+                            mensaje = f"🔔 **Posición cerrada en {symbol}**\n"
+                            mensaje += f"📊 PnL: {pnl:.4f} USDT\n"
+                            mensaje += f"📊 Precio entrada: {precio_entrada:.4f}\n"
+                            mensaje += f"📊 Precio salida: {precio_ejecucion:.4f}"
+                            enviar_telegram(mensaje)
+                        log_consola(f"📊 Detalles del cierre: Precio entrada={precio_entrada:.4f}, Precio ejecución={precio_ejecucion:.4f}, {resultado}, PnL={pnl:.4f}")
                     else:
                         resultado = ""
                         pnl = None
@@ -852,20 +969,36 @@ def ejecutar_bot_trading():
                     precio_entrada = datos_ultima_operacion["precio_entrada"]
                     cantidad = datos_ultima_operacion["cantidad_real"]
                     senal_original = datos_ultima_operacion["senal"]
+                    tp = datos_ultima_operacion["tp"]
+                    sl = datos_ultima_operacion["sl"]
+                    
                     if senal_original == 'long':
                         pnl = (precio_actual - precio_entrada) * cantidad
                     else:
                         pnl = (precio_entrada - precio_actual) * cantidad
                     precio_ejecucion = precio_actual
+                    
                     if pnl > 0:
                         resultado = "TP"
-                        enviar_telegram(f"🎉 ¡Take Profit alcanzado en {symbol}! Ganancia aproximada: {pnl:.4f} USDT")
+                        mensaje = f"🎉 **Take Profit alcanzado en {symbol}** (aproximado)\n"
+                        mensaje += f"💰 Ganancia aproximada: {pnl:.4f} USDT\n"
+                        mensaje += f"📊 Precio entrada: {precio_entrada:.4f}\n"
+                        mensaje += f"📊 Precio actual: {precio_ejecucion:.4f}"
+                        enviar_telegram(mensaje)
                     elif pnl < 0:
                         resultado = "SL"
-                        enviar_telegram(f"⚠️ Stop Loss alcanzado en {symbol}. Pérdida aproximada: {pnl:.4f} USDT")
+                        mensaje = f"⚠️ **Stop Loss alcanzado en {symbol}** (aproximado)\n"
+                        mensaje += f"📉 Pérdida aproximada: {pnl:.4f} USDT\n"
+                        mensaje += f"📊 Precio entrada: {precio_entrada:.4f}\n"
+                        mensaje += f"📊 Precio actual: {precio_ejecucion:.4f}"
+                        enviar_telegram(mensaje)
                     else:
                         resultado = "NEUTRAL"
-                        enviar_telegram(f"🔔 Posición cerrada en {symbol}. PnL aproximado: {pnl:.4f} USDT")
+                        mensaje = f"🔔 **Posición cerrada en {symbol}** (aproximado)\n"
+                        mensaje += f"📊 PnL aproximado: {pnl:.4f} USDT\n"
+                        mensaje += f"📊 Precio entrada: {precio_entrada:.4f}\n"
+                        mensaje += f"📊 Precio actual: {precio_ejecucion:.4f}"
+                        enviar_telegram(mensaje)
                     log_consola(f"⚠️ No se encontró trade de cierre, PnL calculado: {pnl:.4f}")
 
                 if resultado == "SL":
@@ -1011,25 +1144,34 @@ def ejecutar_bot_trading():
                 precio_entrada, cantidad_real = ejecutar_orden(senal, symbol, cantidad)
 
                 if precio_entrada:
+                    # Notificar inmediatamente que se ejecutó la orden
+                    mensaje_orden = f"✅ **Orden {senal.upper()} ejecutada**\n"
+                    mensaje_orden += f"📊 Símbolo: {symbol}\n"
+                    mensaje_orden += f"💰 Precio entrada: {precio_entrada:.4f}\n"
+                    mensaje_orden += f"📦 Cantidad: {cantidad_real}\n"
+                    mensaje_orden += f"🎯 Take Profit: {tp:.4f}\n"
+                    mensaje_orden += f"🛑 Stop Loss: {sl:.4f}"
+                    enviar_telegram(mensaje_orden)
+                    log_consola(f"✅ Orden {senal.upper()} ejecutada a {precio_entrada:.4f}")
+                    
                     # Crear orden OCO para TP/SL
                     side_oco = 'SELL' if senal == 'long' else 'BUY'
                     oco_order = crear_orden_oco(symbol, side_oco, cantidad_real, tp, sl)
+                    
                     if oco_order is None:
-                        # Si falla crear OCO, cerrar la posición inmediatamente
-                        log_consola("❌ Falló crear OCO, cerrando posición...")
-                        try:
-                            close_side = 'SELL' if senal == 'long' else 'BUY'
-                            api_call_with_retry(client.futures_create_order,
-                                symbol=symbol,
-                                side=close_side,
-                                type='MARKET',
-                                quantity=cantidad_real,
-                                reduceOnly=True
-                            )
-                            log_consola("✅ Posición cerrada por fallo en OCO.")
-                        except Exception as e:
-                            log_consola(f"❌ Error cerrando posición tras fallo OCO: {e}")
-                        continue
+                        # Si falla crear OCO, intentar crear órdenes TP/SL separadas
+                        log_consola("⚠️ Falló crear OCO, intentando crear órdenes TP/SL separadas...")
+                        ordenes_creadas = crear_ordenes_tp_sl_separadas(symbol, side_oco, cantidad_real, tp, sl)
+                        
+                        if not ordenes_creadas:
+                            # Si también fallan las órdenes separadas, notificar pero NO cerrar la posición
+                            log_consola("❌ Error: No se pudieron crear órdenes TP/SL. La posición queda abierta sin protección.")
+                            enviar_telegram(f"⚠️ **ADVERTENCIA**: No se pudieron crear órdenes TP/SL para {symbol}.\nLa posición está abierta sin protección. Por favor, revisa manualmente.")
+                            # Continuar con la posición abierta - el usuario puede cerrarla manualmente
+                        else:
+                            log_consola("✅ Órdenes TP/SL separadas creadas correctamente.")
+                    else:
+                        log_consola(f"✅ Orden OCO creada correctamente.")
 
                     ultima_posicion_cerrada = False
                     hubo_posicion_abierta = True
@@ -1044,11 +1186,10 @@ def ejecutar_bot_trading():
                     ultimo_tp = tp
                     ultimo_sl = sl
 
-                    log_consola(f"✅ Orden {senal.upper()} ejecutada correctamente con OCO.")
                     log_consola(f"🎯 Take Profit: {tp:.4f} | 🛑 Stop Loss: {sl:.4f}")
-                    enviar_telegram(f"✅ Orden {senal.upper()} ejecutada a {precio_entrada}.\nTP: {tp} | SL: {sl}")
                 else:
                     log_consola(f"❌ No se pudo ejecutar la orden {senal.upper()}.")
+                    enviar_telegram(f"❌ Error: No se pudo ejecutar la orden {senal.upper()} para {symbol}.")
 
             time.sleep(60)
 
