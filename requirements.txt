@@ -12,6 +12,9 @@ requests==2.31.0
 # Utilidades del sistema
 python-dateutil==2.8.2
 
+# Variables de entorno (seguridad)
+python-dotenv==1.0.0
+
 # ======== DEPENDENCIAS OPCIONALES ========
 # Para mejor rendimiento (opcional)
 # numba==0.58.1

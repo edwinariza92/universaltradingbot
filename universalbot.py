@@ -14,38 +14,52 @@ import queue
 import json
 from requests.exceptions import ConnectionError, Timeout
 
-# ======== CONFIGURACIÓN ========
-api_key = 'Lw3sQdyAZcEJ2s522igX6E28ZL629ZL5JJ9UaqLyM7PXeNRLDu30LmPYFNJ4ixAx'
-api_secret = 'Adw4DXL2BI9oS4sCJlS3dlBeoJQo6iPezmykfL1bhhm0NQe7aTHpaWULLQ0dYOIt'
-symbol = 'DOGEUSDT'
-intervalo = '30m'
-riesgo_pct = 0.01  # 1% de riesgo por operación
-umbral_volatilidad = 0.02  # ATR máximo permitido para operar
-bb_length = 22  # Periodo por defecto para Bandas de Bollinger
-bb_mult = 3.3  # Multiplicador por defecto para Bandas de Bollinger
-atr_length = 3  # Periodo por defecto para ATR
-ma_trend_length = 50  # Periodo por defecto para MA de tendencia
-tp_multiplier = 3.6  # Multiplicador por defecto para Take Profit
-sl_multiplier = 1.6  # Multiplicador por defecto para Stop Loss
-usar_ma_trend = False  # Nuevo: usar filtro MA de tendencia (False por defecto)
+# Intentar cargar python-dotenv si está disponible
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # Si no está instalado, continuar sin él (usará valores por defecto o variables de entorno del sistema)
+    pass
+
+# ======== CONFIGURACIÓN SEGURA (Variables de Entorno) ========
+# Cargar desde variables de entorno, con valores por defecto como fallback
+api_key = os.getenv('BINANCE_API_KEY', 'Lw3sQdyAZcEJ2s522igX6E28ZL629ZL5JJ9UaqLyM7PXeNRLDu30LmPYFNJ4ixAx')
+api_secret = os.getenv('BINANCE_API_SECRET', 'Adw4DXL2BI9oS4sCJlS3dlBeoJQo6iPezmykfL1bhhm0NQe7aTHpaWULLQ0dYOIt')
+symbol = os.getenv('SYMBOL', 'DOGEUSDT')
+intervalo = os.getenv('INTERVALO', '30m')
+riesgo_pct = float(os.getenv('RIESGO_PCT', '0.01'))  # 1% de riesgo por operación
+umbral_volatilidad = float(os.getenv('UMBRAL_VOLATILIDAD', '0.02'))  # ATR máximo permitido para operar
+bb_length = int(os.getenv('BB_LENGTH', '22'))  # Periodo por defecto para Bandas de Bollinger
+bb_mult = float(os.getenv('BB_MULT', '3.3'))  # Multiplicador por defecto para Bandas de Bollinger
+atr_length = int(os.getenv('ATR_LENGTH', '3'))  # Periodo por defecto para ATR
+ma_trend_length = int(os.getenv('MA_TREND_LENGTH', '50'))  # Periodo por defecto para MA de tendencia
+tp_multiplier = float(os.getenv('TP_MULTIPLIER', '3.6'))  # Multiplicador por defecto para Take Profit
+sl_multiplier = float(os.getenv('SL_MULTIPLIER', '1.6'))  # Multiplicador por defecto para Stop Loss
+usar_ma_trend = os.getenv('USAR_MA_TREND', 'True').lower() == 'true'  # Usar filtro MA de tendencia
 # Nuevas configuraciones para gestión de riesgos
-riesgo_dinamico_reduccion = 0.5  # Reducir riesgo a la mitad tras pérdidas consecutivas
-usar_kelly = False  # Activar position sizing basado en Kelly
-kelly_fraction = 0.5  # Usar half-Kelly para reducir riesgo (0.5 = 50% de Kelly)
-riesgo_max_kelly = 0.05  # Máximo riesgo por operación con Kelly (5%)
+riesgo_dinamico_reduccion = float(os.getenv('RIESGO_DINAMICO_REDUCCION', '0.5'))  # Reducir riesgo a la mitad tras pérdidas consecutivas
+usar_kelly = os.getenv('USAR_KELLY', 'False').lower() == 'true'  # Activar position sizing basado en Kelly
+kelly_fraction = float(os.getenv('KELLY_FRACTION', '0.5'))  # Usar half-Kelly para reducir riesgo (0.5 = 50% de Kelly)
+riesgo_max_kelly = float(os.getenv('RIESGO_MAX_KELLY', '0.05'))  # Máximo riesgo por operación con Kelly (5%)
 # Nuevas configuraciones para indicadores adicionales
-usar_rsi = False  # Activar filtro RSI
-rsi_length = 14  # Periodo para RSI
-rsi_overbought = 70  # Nivel de sobrecompra
-rsi_oversold = 30  # Nivel de sobreventa
-usar_macd = False  # Activar filtro MACD
-macd_fast = 12  # Periodo rápido MACD
-macd_slow = 26  # Periodo lento MACD
-macd_signal = 9  # Periodo señal MACD
-usar_volumen_filtro = False  # Activar filtro de volumen
-volumen_periodos = 20  # Periodos para promedio de volumen
-usar_multitimeframe = False  # Activar confirmación multi-timeframe
-timeframe_superior = '1h'  # Timeframe superior para confirmación
+usar_rsi = os.getenv('USAR_RSI', 'False').lower() == 'true'  # Activar filtro RSI
+rsi_length = int(os.getenv('RSI_LENGTH', '14'))  # Periodo para RSI
+rsi_overbought = int(os.getenv('RSI_OVERBOUGHT', '70'))  # Nivel de sobrecompra
+rsi_oversold = int(os.getenv('RSI_OVERSOLD', '30'))  # Nivel de sobreventa
+usar_macd = os.getenv('USAR_MACD', 'False').lower() == 'true'  # Activar filtro MACD
+macd_fast = int(os.getenv('MACD_FAST', '12'))  # Periodo rápido MACD
+macd_slow = int(os.getenv('MACD_SLOW', '26'))  # Periodo lento MACD
+macd_signal = int(os.getenv('MACD_SIGNAL', '9'))  # Periodo señal MACD
+usar_volumen_filtro = os.getenv('USAR_VOLUMEN_FILTRO', 'False').lower() == 'true'  # Activar filtro de volumen
+volumen_periodos = int(os.getenv('VOLUMEN_PERIODOS', '20'))  # Periodos para promedio de volumen
+usar_multitimeframe = os.getenv('USAR_MULTITIMEFRAME', 'False').lower() == 'true'  # Activar confirmación multi-timeframe
+timeframe_superior = os.getenv('TIMEFRAME_SUPERIOR', '1h')  # Timeframe superior para confirmación
+
+# Configuraciones para nuevas funcionalidades
+usar_trailing_stop = os.getenv('USAR_TRAILING_STOP', 'False').lower() == 'true'  # Activar trailing stop loss
+trailing_stop_pct = float(os.getenv('TRAILING_STOP_PCT', '0.5'))  # Porcentaje para trailing stop
+health_check_interval = int(os.getenv('HEALTH_CHECK_INTERVAL', '300'))  # Intervalo de health check en segundos (5 min)
 # ===============================
 
 def api_call_with_retry(func, *args, **kwargs):
@@ -69,8 +83,8 @@ def api_call_with_retry(func, *args, **kwargs):
 client = Client(api_key, api_secret, requests_params={'timeout': 30})
 client.API_URL = 'https://fapi.binance.com/fapi'  # FUTUROS
 
-TELEGRAM_TOKEN = '8446826605:AAEzABJ6KXtB_5fh85B07eMlXuP-IE8UiHk' 
-TELEGRAM_CHAT_ID = '1715798949'
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8446826605:AAEzABJ6KXtB_5fh85B07eMlXuP-IE8UiHk')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '1715798949')
 
 # === Variables de control del bot ===
 bot_activo = False
@@ -181,7 +195,7 @@ def procesar_comando_telegram(comando):
                 f"• MACD: {'ON' if usar_macd else 'OFF'} ({macd_fast}/{macd_slow}/{macd_signal})\n"
                 f"• Volumen Filtro: {'ON' if usar_volumen_filtro else 'OFF'} ({volumen_periodos} períodos)\n"
                 f"• Multi-Timeframe: {'ON' if usar_multitimeframe else 'OFF'} ({timeframe_superior})\n"
-                "v02.01.26")
+                "v03.01.26 (version mejorada)")
 
     elif comando == "configurar":
         return (
@@ -310,6 +324,38 @@ def procesar_comando_telegram(comando):
 
     elif comando == "analizar":
         return analizar_operaciones()
+    
+    elif comando == "performance":
+        return obtener_resumen_performance()
+    
+    elif comando == "health":
+        ok, mensaje = verificar_estado_posicion(symbol)
+        estado_emoji = "✅" if ok else "⚠️"
+        return f"{estado_emoji} **Health Check:** {mensaje}"
+    
+    elif comando.startswith("backtest"):
+        partes = comando.split()
+        if len(partes) >= 2:
+            try:
+                dias = int(partes[1])
+                fecha_inicio = datetime.now() - pd.Timedelta(days=dias)
+                resultado = backtest_estrategia(symbol, intervalo, fecha_inicio)
+                if "error" in resultado:
+                    return f"❌ Error en backtest: {resultado['error']}"
+                mensaje = f"📊 **Resultados del Backtest ({dias} días):**\n\n"
+                mensaje += f"💰 Capital inicial: {resultado['capital_inicial']:.2f} USDT\n"
+                mensaje += f"💰 Capital final: {resultado['capital_final']:.2f} USDT\n"
+                mensaje += f"📈 ROI: {resultado['roi']:.2f}%\n\n"
+                mensaje += f"📊 Operaciones: {resultado['total_operaciones']}\n"
+                mensaje += f"✅ Ganadoras: {resultado['ganadoras']}\n"
+                mensaje += f"❌ Perdedoras: {resultado['perdedoras']}\n"
+                mensaje += f"🎯 Win Rate: {resultado['win_rate']:.2f}%\n"
+                mensaje += f"💵 PnL Total: {resultado['pnl_total']:.4f} USDT"
+                return mensaje
+            except Exception as e:
+                return f"❌ Error: {e}"
+        else:
+            return "❌ Uso: backtest <dias>\nEjemplo: backtest 30"
 
     elif comando == "descargar_registro":
         archivo = 'registro_operaciones.csv'
@@ -344,6 +390,9 @@ def procesar_comando_telegram(comando):
 • `registro` - Muestra las últimas 5 operaciones
 • `registro 10` - Muestra las últimas 10 operaciones
 • `analizar` - Muestra un resumen de resultados del registro
+• `performance` - Análisis de performance en tiempo real
+• `health` - Verifica el estado de las posiciones (Health Check)
+• `backtest <dias>` - Ejecuta backtesting (ej: backtest 30)
 • `descargar_registro` - Descarga el registro de operaciones (CSV)
 • `eliminar_registro` - Elimina el registro de operaciones
 • `cancelar` - Cierra la posición abierta y cancela órdenes TP/SL pendientes
@@ -453,7 +502,12 @@ def obtener_datos(symbol, intervalo, limite=100):
 
 def calcular_senal(df, umbral=None):
     """
-    Calcula la señal usando Bandas de Bollinger, ATR, RSI, MACD, volumen y multi-timeframe (opcionales).
+    Calcula la señal usando Bandas de Bollinger, ATR, y filtros opcionales.
+    
+    Estrategia adaptada de TradingView Pine Script :
+    - Señal LONG: crossover(price, upper_band) cuando ATR < umbral y precio > MA_trend (si está activo)
+    - Señal SHORT: crossunder(price, lower_band) cuando ATR < umbral y precio < MA_trend (si está activo)
+    - TP = ATR * tp_multiplier, SL = ATR * sl_multiplier
     """
     global bb_length, bb_mult, atr_length, umbral_volatilidad, usar_ma_trend, ma_trend_length
     global usar_rsi, rsi_length, rsi_overbought, rsi_oversold, usar_macd, macd_fast, macd_slow, macd_signal
@@ -560,14 +614,27 @@ def calcular_senal(df, umbral=None):
             log_consola(f"⚠️ Error en multi-timeframe: {e}")
             filtro_multitimeframe = True  # Si falla, permitir la señal
 
-    # Combinar todos los filtros
-    if (close_prev <= upper_prev and close_now > upper_now and
-        filtro_volatilidad and filtro_trend_long and filtro_rsi_long and
-        filtro_macd_long and filtro_volumen and filtro_multitimeframe):
+    # Detectar señales de crossover/crossunder (como en Pine Script)
+    # Long: crossover(price, upper) - precio cruza por encima de la banda superior
+    # Short: crossunder(price, lower) - precio cruza por debajo de la banda inferior
+    crossover_long = close_prev <= upper_prev and close_now > upper_now
+    crossunder_short = close_prev >= lower_prev and close_now < lower_now
+    
+    # Combinar todos los filtros (solo filtros básicos activos por defecto)
+    # La estrategia DOGE solo usa: filtro_volatilidad y filtro_ma_trend
+    if (crossover_long and
+        filtro_volatilidad and filtro_trend_long and 
+        (not usar_rsi or filtro_rsi_long) and
+        (not usar_macd or filtro_macd_long) and
+        (not usar_volumen_filtro or filtro_volumen) and
+        (not usar_multitimeframe or filtro_multitimeframe)):
         return 'long'
-    elif (close_prev >= lower_prev and close_now < lower_now and
-          filtro_volatilidad and filtro_trend_short and filtro_rsi_short and
-          filtro_macd_short and filtro_volumen and filtro_multitimeframe):
+    elif (crossunder_short and
+          filtro_volatilidad and filtro_trend_short and
+          (not usar_rsi or filtro_rsi_short) and
+          (not usar_macd or filtro_macd_short) and
+          (not usar_volumen_filtro or filtro_volumen) and
+          (not usar_multitimeframe or filtro_multitimeframe)):
         return 'short'
     else:
         return 'neutral'
@@ -667,41 +734,33 @@ def obtener_precisiones(symbol):
                     precio_decimales = abs(int(np.log10(tick_size)))
     return cantidad_decimales, precio_decimales
 
-def calcular_atr(df, periodo=14):
-    """Calcula el ATR usando la fórmula estándar (True Range)"""
-    df['high'] = df['high'].astype(float)
-    df['low'] = df['low'].astype(float)
-    df['close'] = df['close'].astype(float)
-    
-    # True Range = max(high-low, abs(high-prev_close), abs(low-prev_close))
-    df['prev_close'] = df['close'].shift(1)
-    df['tr1'] = df['high'] - df['low']
-    df['tr2'] = abs(df['high'] - df['prev_close'])
-    df['tr3'] = abs(df['low'] - df['prev_close'])
-    df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-    
-    # ATR = Media móvil del True Range
-    df['atr'] = df['tr'].rolling(window=periodo).mean()
-    return df['atr'].iloc[-1]
-
 def crear_orden_oco(symbol, side, quantity, tp_price, sl_price):
     """
     Crea una orden OCO (One Cancels Other) para Take Profit y Stop Loss.
     """
     try:
+        cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
+        tp_price_rounded = round(tp_price, precio_decimales)
+        sl_price_rounded = round(sl_price, precio_decimales)
+        quantity_rounded = round(quantity, cantidad_decimales)
+        
+        log_consola(f"🔧 Intentando crear OCO: TP={tp_price_rounded:.{precio_decimales}f}, SL={sl_price_rounded:.{precio_decimales}f}, Quantity={quantity_rounded:.{cantidad_decimales}f}")
+        
         order = api_call_with_retry(client.futures_create_oco_order,
             symbol=symbol,
             side=side,  # 'SELL' para long, 'BUY' para short
-            quantity=quantity,
-            price=round(tp_price, obtener_precisiones(symbol)[1]),  # TP price
-            stopPrice=round(sl_price, obtener_precisiones(symbol)[1]),  # SL price
-            stopLimitPrice=round(sl_price, obtener_precisiones(symbol)[1]),  # SL limit price
+            quantity=quantity_rounded,
+            price=tp_price_rounded,  # TP price
+            stopPrice=sl_price_rounded,  # SL price
+            stopLimitPrice=sl_price_rounded,  # SL limit price
             stopLimitTimeInForce='GTC'
         )
-        log_consola(f"✅ Orden OCO creada: TP={tp_price:.4f}, SL={sl_price:.4f}")
+        log_consola(f"✅ Orden OCO creada exitosamente: TP={tp_price_rounded:.4f}, SL={sl_price_rounded:.4f}")
         return order
     except Exception as e:
-        log_consola(f"❌ Error creando orden OCO: {e}")
+        error_msg = str(e)
+        log_consola(f"❌ Error creando orden OCO: {error_msg}")
+        log_consola(f"   Detalles: symbol={symbol}, side={side}, quantity={quantity}, tp={tp_price}, sl={sl_price}")
         return None
 
 def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
@@ -715,80 +774,67 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
         cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
         tp_price_rounded = round(tp_price, precio_decimales)
         sl_price_rounded = round(sl_price, precio_decimales)
+        quantity_rounded = round(quantity, cantidad_decimales)
+        
+        log_consola(f"🔧 Intentando crear órdenes TP/SL separadas: TP={tp_price_rounded:.{precio_decimales}f}, SL={sl_price_rounded:.{precio_decimales}f}, Quantity={quantity_rounded:.{cantidad_decimales}f}")
         
         # Crear orden de Take Profit
         try:
-            # Para TAKE_PROFIT_MARKET, usar closePosition=True sin quantity
             tp_order = api_call_with_retry(client.futures_create_order,
                 symbol=symbol,
                 side=side,
                 type='TAKE_PROFIT_MARKET',
                 stopPrice=tp_price_rounded,
-                closePosition=True
+                quantity=quantity_rounded,
+                reduceOnly=True
             )
-            log_consola(f"✅ Orden TP creada: {tp_price_rounded:.4f}")
+            log_consola(f"✅ Orden TP creada exitosamente: {tp_price_rounded:.4f}")
         except Exception as e:
-            log_consola(f"❌ Error creando orden TP: {e}")
-            # Intentar con quantity si closePosition falla
-            try:
-                tp_order = api_call_with_retry(client.futures_create_order,
-                    symbol=symbol,
-                    side=side,
-                    type='TAKE_PROFIT_MARKET',
-                    quantity=quantity,
-                    stopPrice=tp_price_rounded
-                )
-                log_consola(f"✅ Orden TP creada (con quantity): {tp_price_rounded:.4f}")
-            except Exception as e2:
-                log_consola(f"❌ Error creando orden TP (intento con quantity): {e2}")
-                return False
+            error_msg = str(e)
+            log_consola(f"❌ Error creando orden TP: {error_msg}")
+            log_consola(f"   Detalles: symbol={symbol}, side={side}, type=TAKE_PROFIT_MARKET, stopPrice={tp_price_rounded}, quantity={quantity_rounded}")
+            return False
         
         # Crear orden de Stop Loss
         try:
-            # Para STOP_MARKET, usar closePosition=True sin quantity
             sl_order = api_call_with_retry(client.futures_create_order,
                 symbol=symbol,
                 side=side,
                 type='STOP_MARKET',
                 stopPrice=sl_price_rounded,
-                closePosition=True
+                quantity=quantity_rounded,
+                reduceOnly=True
             )
-            log_consola(f"✅ Orden SL creada: {sl_price_rounded:.4f}")
+            log_consola(f"✅ Orden SL creada exitosamente: {sl_price_rounded:.4f}")
         except Exception as e:
-            log_consola(f"❌ Error creando orden SL: {e}")
+            error_msg = str(e)
+            log_consola(f"❌ Error creando orden SL: {error_msg}")
+            log_consola(f"   Detalles: symbol={symbol}, side={side}, type=STOP_MARKET, stopPrice={sl_price_rounded}, quantity={quantity_rounded}")
             # Intentar cancelar la orden TP si se creó pero falló el SL
             if tp_order:
                 try:
                     api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=tp_order['orderId'])
                     log_consola("🗑️ Orden TP cancelada debido a error en SL")
-                except:
-                    pass
-            # Intentar con quantity si closePosition falla
-            try:
-                sl_order = api_call_with_retry(client.futures_create_order,
-                    symbol=symbol,
-                    side=side,
-                    type='STOP_MARKET',
-                    quantity=quantity,
-                    stopPrice=sl_price_rounded
-                )
-                log_consola(f"✅ Orden SL creada (con quantity): {sl_price_rounded:.4f}")
-            except Exception as e2:
-                log_consola(f"❌ Error creando orden SL (intento con quantity): {e2}")
-                return False
+                except Exception as cancel_error:
+                    log_consola(f"⚠️ Error cancelando orden TP: {cancel_error}")
+            return False
         
+        log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente")
         return True
     except Exception as e:
-        log_consola(f"❌ Error inesperado creando órdenes TP/SL separadas: {e}")
+        error_msg = str(e)
+        log_consola(f"❌ Error inesperado creando órdenes TP/SL separadas: {error_msg}")
         # Intentar limpiar órdenes creadas si hay error
         if tp_order:
             try:
                 api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=tp_order['orderId'])
+                log_consola("🗑️ Orden TP cancelada debido a error general")
             except:
                 pass
         if sl_order:
             try:
                 api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=sl_order['orderId'])
+                log_consola("🗑️ Orden SL cancelada debido a error general")
             except:
                 pass
         return False
@@ -857,6 +903,309 @@ def calcular_kelly_fraction():
 
     return kelly_ajustado
 
+# ============ NUEVAS FUNCIONALIDADES ============
+
+def verificar_estado_posicion(symbol):
+    """
+    Health Check: Verifica que las posiciones abiertas tengan órdenes TP/SL activas.
+    Retorna (ok, mensaje) donde ok es True si todo está bien.
+    """
+    try:
+        posicion = api_call_with_retry(client.futures_position_information, symbol=symbol)
+        ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
+        
+        if not posicion:
+            return True, "No hay información de posición"
+        
+        pos_abierta = float(posicion[0]['positionAmt']) != 0
+        
+        if not pos_abierta:
+            return True, "No hay posición abierta"
+        
+        # Verificar que hay órdenes TP/SL
+        tiene_tp_sl = any(o['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET', 'TAKE_PROFIT', 'STOP'] 
+                         for o in ordenes)
+        
+        if not tiene_tp_sl:
+            mensaje = f"🚨 ALERTA: {symbol} tiene posición abierta sin órdenes TP/SL activas"
+            log_consola(mensaje)
+            enviar_telegram(mensaje)
+            return False, "Posición sin protección TP/SL"
+        
+        return True, "OK"
+        
+    except Exception as e:
+        log_consola(f"❌ Error en health check: {e}")
+        return False, f"Error: {str(e)}"
+
+def actualizar_trailing_stop(symbol, precio_entrada, senal, precio_actual, sl_actual, porcentaje_trailing=None):
+    """
+    Actualiza el stop loss siguiendo el precio favorablemente (Trailing Stop).
+    Retorna (nuevo_sl, actualizado) donde actualizado es True si se actualizó.
+    """
+    if porcentaje_trailing is None:
+        porcentaje_trailing = trailing_stop_pct
+    
+    try:
+        if senal == 'long':
+            nuevo_sl = precio_actual * (1 - porcentaje_trailing / 100)
+            if nuevo_sl > sl_actual and nuevo_sl < precio_actual:
+                log_consola(f"📈 Trailing Stop: Actualizando SL de {sl_actual:.4f} a {nuevo_sl:.4f} (LONG)")
+                return nuevo_sl, True
+        else:  # short
+            nuevo_sl = precio_actual * (1 + porcentaje_trailing / 100)
+            if nuevo_sl < sl_actual and nuevo_sl > precio_actual:
+                log_consola(f"📉 Trailing Stop: Actualizando SL de {sl_actual:.4f} a {nuevo_sl:.4f} (SHORT)")
+                return nuevo_sl, True
+        
+        return sl_actual, False
+    except Exception as e:
+        log_consola(f"❌ Error en trailing stop: {e}")
+        return sl_actual, False
+
+def aplicar_trailing_stop(symbol, datos_operacion):
+    """Aplica trailing stop loss a una posición abierta."""
+    try:
+        precio_actual = float(api_call_with_retry(client.futures_symbol_ticker, symbol=symbol)['price'])
+        precio_entrada = datos_operacion['precio_entrada']
+        senal = datos_operacion['senal']
+        sl_actual = datos_operacion['sl']
+        cantidad = datos_operacion['cantidad_real']
+        
+        nuevo_sl, debe_actualizar = actualizar_trailing_stop(
+            symbol, precio_entrada, senal, precio_actual, sl_actual
+        )
+        
+        if not debe_actualizar:
+            return False
+        
+        # Cancelar orden SL actual y crear nueva
+        ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
+        for orden in ordenes:
+            if orden['type'] in ['STOP_MARKET', 'STOP']:
+                try:
+                    api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
+                except:
+                    pass
+        
+        side_oco = 'SELL' if senal == 'long' else 'BUY'
+        cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
+        nuevo_sl_rounded = round(nuevo_sl, precio_decimales)
+        
+        api_call_with_retry(client.futures_create_order,
+            symbol=symbol,
+            side=side_oco,
+            type='STOP_MARKET',
+            stopPrice=nuevo_sl_rounded,
+            quantity=round(cantidad, cantidad_decimales),
+            reduceOnly=True
+        )
+        
+        datos_operacion['sl'] = nuevo_sl_rounded
+        enviar_telegram(f"📈 Trailing Stop actualizado en {symbol}: SL={nuevo_sl_rounded:.4f}")
+        return True
+            
+    except Exception as e:
+        log_consola(f"❌ Error aplicando trailing stop: {e}")
+        return False
+
+def analizar_performance_tiempo_real():
+    """Calcula métricas de performance en tiempo real."""
+    archivo = 'registro_operaciones.csv'
+    if not os.path.exists(archivo):
+        return None
+    
+    try:
+        df = pd.read_csv(archivo)
+        if df.empty:
+            return None
+        
+        df_completadas = df[df['Resultado'].isin(['TP', 'SL', 'NEUTRAL'])]
+        if len(df_completadas) == 0:
+            return None
+        
+        total_trades = len(df_completadas)
+        ganadoras = len(df_completadas[df_completadas['Resultado'] == 'TP'])
+        perdedoras = len(df_completadas[df_completadas['Resultado'] == 'SL'])
+        win_rate = (ganadoras / total_trades * 100) if total_trades > 0 else 0
+        
+        df_completadas['PnL'] = pd.to_numeric(df_completadas['PnL'], errors='coerce')
+        pnl_total = df_completadas['PnL'].sum()
+        pnl_promedio = df_completadas['PnL'].mean()
+        
+        ganancias = df_completadas[df_completadas['PnL'] > 0]['PnL'].sum()
+        perdidas = abs(df_completadas[df_completadas['PnL'] < 0]['PnL'].sum())
+        profit_factor = ganancias / perdidas if perdidas > 0 else float('inf')
+        
+        if len(df_completadas) > 1:
+            retornos = df_completadas['PnL'].pct_change().dropna()
+            sharpe_ratio = (retornos.mean() / retornos.std() * np.sqrt(252)) if len(retornos) > 0 and retornos.std() > 0 else 0
+        else:
+            sharpe_ratio = 0
+        
+        df_completadas = df_completadas.sort_values('Fecha').reset_index(drop=True)
+        racha_actual = 0
+        ultimo_resultado = None
+        for resultado in reversed(df_completadas['Resultado']):
+            if ultimo_resultado is None:
+                ultimo_resultado = resultado
+                racha_actual = 1
+            elif resultado == ultimo_resultado:
+                racha_actual += 1
+            else:
+                break
+        
+        return {
+            'total_trades': total_trades,
+            'ganadoras': ganadoras,
+            'perdedoras': perdedoras,
+            'win_rate': win_rate,
+            'pnl_total': pnl_total,
+            'pnl_promedio': pnl_promedio,
+            'profit_factor': profit_factor,
+            'sharpe_ratio': sharpe_ratio,
+            'racha_actual': racha_actual,
+            'tipo_racha': ultimo_resultado if ultimo_resultado else 'N/A',
+            'mayor_ganancia': df_completadas['PnL'].max(),
+            'mayor_perdida': df_completadas['PnL'].min()
+        }
+    except Exception as e:
+        log_consola(f"❌ Error analizando performance: {e}")
+        return None
+
+def obtener_resumen_performance():
+    """Obtiene un resumen formateado de la performance."""
+    metrics = analizar_performance_tiempo_real()
+    if metrics is None:
+        return "❌ No hay datos suficientes para analizar performance."
+    
+    mensaje = "📊 **Análisis de Performance en Tiempo Real**\n\n"
+    mensaje += f"📈 **Estadísticas Generales:**\n"
+    mensaje += f"• Total de operaciones: {metrics['total_trades']}\n"
+    mensaje += f"• Ganadoras: {metrics['ganadoras']} | Perdedoras: {metrics['perdedoras']}\n"
+    mensaje += f"• Win Rate: {metrics['win_rate']:.2f}%\n\n"
+    mensaje += f"💰 **Rentabilidad:**\n"
+    mensaje += f"• PnL Total: {metrics['pnl_total']:.4f} USDT\n"
+    mensaje += f"• PnL Promedio: {metrics['pnl_promedio']:.4f} USDT\n"
+    mensaje += f"• Profit Factor: {metrics['profit_factor']:.2f}\n"
+    mensaje += f"• Sharpe Ratio: {metrics['sharpe_ratio']:.2f}\n\n"
+    mensaje += f"📊 **Extremos:**\n"
+    mensaje += f"• Mayor Ganancia: {metrics['mayor_ganancia']:.4f} USDT\n"
+    mensaje += f"• Mayor Pérdida: {metrics['mayor_perdida']:.4f} USDT\n\n"
+    mensaje += f"🔥 **Racha Actual:**\n"
+    mensaje += f"• {metrics['racha_actual']} operaciones {metrics['tipo_racha']}"
+    
+    return mensaje
+
+def backtest_estrategia(symbol, intervalo, fecha_inicio, fecha_fin=None, limite_velas=500):
+    """Ejecuta backtesting de la estrategia usando datos históricos."""
+    try:
+        log_consola(f"🔄 Iniciando backtest para {symbol} en {intervalo}...")
+        
+        if fecha_fin:
+            klines = api_call_with_retry(client.futures_historical_klines,
+                symbol=symbol,
+                interval=intervalo,
+                start_str=fecha_inicio.strftime('%Y-%m-%d') if isinstance(fecha_inicio, datetime) else str(fecha_inicio),
+                end_str=fecha_fin.strftime('%Y-%m-%d') if isinstance(fecha_fin, datetime) else str(fecha_fin),
+                limit=limite_velas
+            )
+        else:
+            klines = api_call_with_retry(client.futures_klines,
+                symbol=symbol,
+                interval=intervalo,
+                limit=limite_velas
+            )
+        
+        if not klines:
+            return {"error": "No se pudieron obtener datos históricos"}
+        
+        df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume',
+                                           'close_time', 'quote_asset_volume', 'number_of_trades',
+                                           'taker_buy_base', 'taker_buy_quote', 'ignore'])
+        df['close'] = df['close'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+        
+        posicion_abierta = None
+        precio_entrada = None
+        tipo_posicion = None
+        tp_precio = None
+        sl_precio = None
+        operaciones = []
+        capital_inicial = 1000
+        capital_actual = capital_inicial
+        
+        for i in range(len(df)):
+            if i < max(bb_length, atr_length, ma_trend_length) + 1:
+                continue
+            
+            df_slice = df.iloc[:i+1].copy()
+            senal = calcular_senal(df_slice)
+            precio_actual = float(df_slice['close'].iloc[-1])
+            
+            if posicion_abierta:
+                if tipo_posicion == 'long':
+                    if precio_actual >= tp_precio:
+                        pnl = (tp_precio - precio_entrada) * posicion_abierta
+                        capital_actual += pnl
+                        operaciones.append({'tipo': 'long', 'entrada': precio_entrada, 'salida': tp_precio, 'resultado': 'TP', 'pnl': pnl})
+                        posicion_abierta = None
+                    elif precio_actual <= sl_precio:
+                        pnl = (sl_precio - precio_entrada) * posicion_abierta
+                        capital_actual += pnl
+                        operaciones.append({'tipo': 'long', 'entrada': precio_entrada, 'salida': sl_precio, 'resultado': 'SL', 'pnl': pnl})
+                        posicion_abierta = None
+                else:
+                    if precio_actual <= tp_precio:
+                        pnl = (precio_entrada - tp_precio) * posicion_abierta
+                        capital_actual += pnl
+                        operaciones.append({'tipo': 'short', 'entrada': precio_entrada, 'salida': tp_precio, 'resultado': 'TP', 'pnl': pnl})
+                        posicion_abierta = None
+                    elif precio_actual >= sl_precio:
+                        pnl = (precio_entrada - sl_precio) * posicion_abierta
+                        capital_actual += pnl
+                        operaciones.append({'tipo': 'short', 'entrada': precio_entrada, 'salida': sl_precio, 'resultado': 'SL', 'pnl': pnl})
+                        posicion_abierta = None
+            
+            if not posicion_abierta and senal in ['long', 'short']:
+                atr = calcular_atr(df_slice)
+                if atr and atr <= umbral_volatilidad:
+                    precio_entrada = precio_actual
+                    tipo_posicion = senal
+                    if senal == 'long':
+                        tp_precio = precio_entrada + atr * tp_multiplier
+                        sl_precio = precio_entrada - atr * sl_multiplier
+                    else:
+                        tp_precio = precio_entrada - atr * tp_multiplier
+                        sl_precio = precio_entrada + atr * sl_multiplier
+                    riesgo_usdt = capital_actual * riesgo_pct
+                    distancia_sl = abs(precio_entrada - sl_precio)
+                    posicion_abierta = riesgo_usdt / distancia_sl if distancia_sl > 0 else 0
+        
+        total_operaciones = len(operaciones)
+        ganadoras = len([o for o in operaciones if o['resultado'] == 'TP'])
+        perdedoras = len([o for o in operaciones if o['resultado'] == 'SL'])
+        win_rate = (ganadoras / total_operaciones * 100) if total_operaciones > 0 else 0
+        pnl_total = sum(o['pnl'] for o in operaciones)
+        roi = ((capital_actual - capital_inicial) / capital_inicial) * 100
+        
+        return {
+            'capital_inicial': capital_inicial,
+            'capital_final': capital_actual,
+            'roi': roi,
+            'total_operaciones': total_operaciones,
+            'ganadoras': ganadoras,
+            'perdedoras': perdedoras,
+            'win_rate': win_rate,
+            'pnl_total': pnl_total,
+            'operaciones': operaciones
+        }
+        
+    except Exception as e:
+        log_consola(f"❌ Error en backtest: {e}")
+        return {"error": str(e)}
+
 # ============ FUNCIÓN PRINCIPAL DEL BOT ============
 def ejecutar_bot_trading():
     """Función principal del bot de trading que se ejecuta en un hilo separado"""
@@ -869,6 +1218,8 @@ def ejecutar_bot_trading():
     ultimo_tp = None
     ultimo_sl = None
     perdidas_consecutivas = 0  # Al inicio de ejecutar_bot_trading
+    ultimo_health_check = time.time()
+    ultimo_trailing_check = time.time()
 
     # Notificar inicio del bot
     enviar_telegram(f"🤖 **Bot {symbol} iniciado**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n📊 Símbolo: {symbol}\n⏱️ Intervalo: {intervalo}")
@@ -1086,9 +1437,14 @@ def ejecutar_bot_trading():
                 continue
 
             if senal in ['long', 'short'] and pos_abierta == 0:
+                # Calcular ATR para validar volatilidad y calcular TP/SL
                 atr = calcular_atr(df)
+                if atr is None:
+                    log_consola("⚠️ No se pudo calcular ATR, esperando más datos...")
+                    time.sleep(60)
+                    continue
                 if atr > umbral_volatilidad:
-                    log_consola("Mercado demasiado volátil, no se opera.")
+                    log_consola(f"Mercado demasiado volátil (ATR={atr:.6f} > {umbral_volatilidad}), no se opera.")
                     time.sleep(60)
                     continue
 
@@ -1096,7 +1452,6 @@ def ejecutar_bot_trading():
                 saldo_usdt = next((float(b['balance']) for b in balance if b['asset'] == 'USDT'), 0)
 
                 precio_actual = float(df['close'].iloc[-1])
-                atr = df['atr'].iloc[-1]
 
                 # Riesgo dinámico: reducir si hay pérdidas consecutivas
                 riesgo_actual = riesgo_pct
@@ -1154,6 +1509,30 @@ def ejecutar_bot_trading():
                     enviar_telegram(mensaje_orden)
                     log_consola(f"✅ Orden {senal.upper()} ejecutada a {precio_entrada:.4f}")
                     
+                    # Esperar un momento para que Binance registre la posición
+                    time.sleep(2)
+                    
+                    # Validar que los precios TP/SL estén en la dirección correcta
+                    if senal == 'long':
+                        if tp <= precio_entrada:
+                            log_consola(f"⚠️ TP ({tp:.4f}) debe ser mayor que precio entrada ({precio_entrada:.4f}) para LONG. Ajustando...")
+                            tp = precio_entrada * 1.001  # Ajustar TP ligeramente por encima
+                        if sl >= precio_entrada:
+                            log_consola(f"⚠️ SL ({sl:.4f}) debe ser menor que precio entrada ({precio_entrada:.4f}) para LONG. Ajustando...")
+                            sl = precio_entrada * 0.999  # Ajustar SL ligeramente por debajo
+                    else:  # short
+                        if tp >= precio_entrada:
+                            log_consola(f"⚠️ TP ({tp:.4f}) debe ser menor que precio entrada ({precio_entrada:.4f}) para SHORT. Ajustando...")
+                            tp = precio_entrada * 0.999  # Ajustar TP ligeramente por debajo
+                        if sl <= precio_entrada:
+                            log_consola(f"⚠️ SL ({sl:.4f}) debe ser mayor que precio entrada ({precio_entrada:.4f}) para SHORT. Ajustando...")
+                            sl = precio_entrada * 1.001  # Ajustar SL ligeramente por encima
+                    
+                    # Redondear nuevamente después de los ajustes
+                    cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
+                    tp = round(tp, precio_decimales)
+                    sl = round(sl, precio_decimales)
+                    
                     # Crear orden OCO para TP/SL
                     side_oco = 'SELL' if senal == 'long' else 'BUY'
                     oco_order = crear_orden_oco(symbol, side_oco, cantidad_real, tp, sl)
@@ -1190,6 +1569,20 @@ def ejecutar_bot_trading():
                 else:
                     log_consola(f"❌ No se pudo ejecutar la orden {senal.upper()}.")
                     enviar_telegram(f"❌ Error: No se pudo ejecutar la orden {senal.upper()} para {symbol}.")
+            
+            # Health Check periódico
+            tiempo_actual = time.time()
+            if tiempo_actual - ultimo_health_check >= health_check_interval:
+                ok, mensaje = verificar_estado_posicion(symbol)
+                if not ok:
+                    log_consola(f"⚠️ Health Check falló: {mensaje}")
+                ultimo_health_check = tiempo_actual
+            
+            # Trailing Stop (si está activo y hay posición abierta)
+            if usar_trailing_stop and datos_ultima_operacion and pos_abierta != 0:
+                if tiempo_actual - ultimo_trailing_check >= 60:  # Verificar cada minuto
+                    aplicar_trailing_stop(symbol, datos_ultima_operacion)
+                    ultimo_trailing_check = tiempo_actual
 
             time.sleep(60)
 
