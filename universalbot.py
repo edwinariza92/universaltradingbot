@@ -83,7 +83,7 @@ def api_call_with_retry(func, *args, **kwargs):
 client = Client(api_key, api_secret, requests_params={'timeout': 30})
 client.API_URL = 'https://fapi.binance.com/fapi'  # FUTUROS
 
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8446826605:AAEzABJ6KXtB_5fh85B07eMlXuP-IE8UiHk')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8369594617:AAGMO7wE-OEAsORhNKQs9LIIVMdwgnUB7PY')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', '1715798949')
 
 # === Variables de control del bot ===
