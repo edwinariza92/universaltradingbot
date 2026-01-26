@@ -94,6 +94,7 @@ ultimo_mensaje_consola = "Bot no iniciado"
 registro_lock = threading.Lock()  # Lock para proteger escritura del CSV
 ultimo_tp = None  # Para almacenar el TP de la última operación
 ultimo_sl = None  # Para almacenar el SL de la última operación
+alerta_sin_tp_sl_enviada = False  # Control para enviar la alerta de posición sin TP/SL solo una vez
 # ===================================
 
 def enviar_telegram(mensaje):
@@ -814,6 +815,7 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
     Intenta diferentes métodos hasta que uno funcione.
     Retorna True si ambas órdenes se crearon correctamente, False en caso contrario.
     """
+    global alerta_sin_tp_sl_enviada
     cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
     tp_price_rounded = round(tp_price, precio_decimales)
     sl_price_rounded = round(sl_price, precio_decimales)
@@ -842,6 +844,7 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
         )
         log_consola(f"✅ Orden SL creada (Método 1): {sl_price_rounded:.4f}")
         log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 1)")
+        alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
         return True
     except Exception as e:
         log_consola(f"⚠️ Método 1 falló: {str(e)}")
@@ -877,6 +880,7 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
         )
         log_consola(f"✅ Orden SL creada (Método 2): {sl_price_rounded:.4f}")
         log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 2)")
+        alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
         return True
     except Exception as e:
         log_consola(f"⚠️ Método 2 falló: {str(e)}")
@@ -914,6 +918,7 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
         )
         log_consola(f"✅ Orden SL creada (Método 3): {sl_price_rounded:.4f}")
         log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 3)")
+        alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
         return True
     except Exception as e:
         log_consola(f"⚠️ Método 3 falló: {str(e)}")
@@ -949,6 +954,7 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
         )
         log_consola(f"✅ Orden TP creada (Método 4): {tp_price_rounded:.4f}")
         log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 4)")
+        alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
         return True
     except Exception as e:
         log_consola(f"⚠️ Método 4 falló: {str(e)}")
@@ -1034,7 +1040,9 @@ def verificar_estado_posicion(symbol):
     """
     Health Check: Verifica que las posiciones abiertas tengan órdenes TP/SL activas.
     Retorna (ok, mensaje) donde ok es True si todo está bien.
+    Envía alerta a Telegram solo una vez cuando se detecta posición sin TP/SL.
     """
+    global alerta_sin_tp_sl_enviada
     try:
         posicion = api_call_with_retry(client.futures_position_information, symbol=symbol)
         ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
@@ -1045,6 +1053,8 @@ def verificar_estado_posicion(symbol):
         pos_abierta = float(posicion[0]['positionAmt']) != 0
         
         if not pos_abierta:
+            # Si no hay posición abierta, resetear el flag para la próxima alerta
+            alerta_sin_tp_sl_enviada = False
             return True, "No hay posición abierta"
         
         # Verificar que hay órdenes TP/SL
@@ -1052,10 +1062,16 @@ def verificar_estado_posicion(symbol):
                          for o in ordenes)
         
         if not tiene_tp_sl:
-            mensaje = f"🚨 ALERTA: {symbol} tiene posición abierta sin órdenes TP/SL activas"
-            log_consola(mensaje)
-            enviar_telegram(mensaje)
+            # Enviar alerta solo si no ha sido enviada aún
+            if not alerta_sin_tp_sl_enviada:
+                mensaje = f"🚨 ALERTA: {symbol} tiene posición abierta sin órdenes TP/SL activas"
+                log_consola(mensaje)
+                enviar_telegram(mensaje)
+                alerta_sin_tp_sl_enviada = True
             return False, "Posición sin protección TP/SL"
+        else:
+            # Si se detectan órdenes TP/SL, resetear el flag para la próxima alerta
+            alerta_sin_tp_sl_enviada = False
         
         return True, "OK"
         
