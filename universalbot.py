@@ -29,36 +29,57 @@ api_secret = os.getenv('BINANCE_API_SECRET', 'Adw4DXL2BI9oS4sCJlS3dlBeoJQo6iPezm
 symbol = os.getenv('SYMBOL', 'DOGEUSDT')
 intervalo = os.getenv('INTERVALO', '30m')
 riesgo_pct = float(os.getenv('RIESGO_PCT', '0.01'))  # 1% de riesgo por operación
-umbral_volatilidad = float(os.getenv('UMBRAL_VOLATILIDAD', '0.02'))  # ATR máximo permitido para operar
-bb_length = int(os.getenv('BB_LENGTH', '22'))  # Periodo por defecto para Bandas de Bollinger
-bb_mult = float(os.getenv('BB_MULT', '3.3'))  # Multiplicador por defecto para Bandas de Bollinger
-atr_length = int(os.getenv('ATR_LENGTH', '3'))  # Periodo por defecto para ATR
-ma_trend_length = int(os.getenv('MA_TREND_LENGTH', '50'))  # Periodo por defecto para MA de tendencia
-tp_multiplier = float(os.getenv('TP_MULTIPLIER', '3.6'))  # Multiplicador por defecto para Take Profit
-sl_multiplier = float(os.getenv('SL_MULTIPLIER', '1.6'))  # Multiplicador por defecto para Stop Loss
+
+# ==========================================
+# === PARÁMETROS DE INDICADORES (Sincronizados con PineScript) ===
+# ==========================================
+# Bandas de Bollinger
+bb_length = int(os.getenv('BB_LENGTH', '22'))  # BB Periodo
+bb_mult = float(os.getenv('BB_MULT', '3.3'))  # BB Desviación
+
+# ATR (para TP/SL)
+atr_length = int(os.getenv('ATR_LENGTH', '3'))  # ATR Periodo
+tp_multiplier = float(os.getenv('TP_MULTIPLIER', '3.6'))  # Multiplicador TP (Profit)
+sl_multiplier = float(os.getenv('SL_MULTIPLIER', '1.6'))  # Multiplicador SL (Loss)
+umbral_volatilidad = float(os.getenv('UMBRAL_VOLATILIDAD', '0.02'))  # Umbral Volatilidad (ATR)
+
+# Filtro de tendencia (MA)
+ma_trend_length = int(os.getenv('MA_TREND_LENGTH', '50'))  # Periodo MA Tendencia
 usar_ma_trend = os.getenv('USAR_MA_TREND', 'True').lower() == 'true'  # Usar filtro MA de tendencia
-# Nuevas configuraciones para gestión de riesgos
+
+# RSI (Opcional)
+usar_rsi = os.getenv('USAR_RSI', 'False').lower() == 'true'  # Usar Filtro RSI
+rsi_length = int(os.getenv('RSI_LENGTH', '14'))  # RSI Periodo
+rsi_overbought = int(os.getenv('RSI_OVERBOUGHT', '70'))  # RSI Sobrecompra
+rsi_oversold = int(os.getenv('RSI_OVERSOLD', '30'))  # RSI Sobreventa
+
+# MACD (Opcional)
+usar_macd = os.getenv('USAR_MACD', 'False').lower() == 'true'  # Usar Filtro MACD
+macd_fast = int(os.getenv('MACD_FAST', '12'))  # MACD Rápida
+macd_slow = int(os.getenv('MACD_SLOW', '26'))  # MACD Lenta
+macd_signal = int(os.getenv('MACD_SIGNAL', '9'))  # MACD Señal
+
+# Volumen (Opcional)
+usar_volumen_filtro = os.getenv('USAR_VOLUMEN_FILTRO', 'False').lower() == 'true'  # Usar Filtro de Volumen
+volumen_periodos = int(os.getenv('VOLUMEN_PERIODOS', '20'))  # Periodo Media Volumen
+
+# Multi-Timeframe (Opcional)
+usar_multitimeframe = os.getenv('USAR_MULTITIMEFRAME', 'False').lower() == 'true'  # Activar confirmación multi-timeframe
+timeframe_superior = os.getenv('TIMEFRAME_SUPERIOR', '1h')  # Timeframe superior para confirmación
+
+# ==========================================
+# === CONFIGURACIÓN DE GESTIÓN DE RIESGOS ===
+# ==========================================
 riesgo_dinamico_reduccion = float(os.getenv('RIESGO_DINAMICO_REDUCCION', '0.5'))  # Reducir riesgo a la mitad tras pérdidas consecutivas
 usar_kelly = os.getenv('USAR_KELLY', 'False').lower() == 'true'  # Activar position sizing basado en Kelly
 kelly_fraction = float(os.getenv('KELLY_FRACTION', '0.5'))  # Usar half-Kelly para reducir riesgo (0.5 = 50% de Kelly)
 riesgo_max_kelly = float(os.getenv('RIESGO_MAX_KELLY', '0.05'))  # Máximo riesgo por operación con Kelly (5%)
-# Nuevas configuraciones para indicadores adicionales
-usar_rsi = os.getenv('USAR_RSI', 'False').lower() == 'true'  # Activar filtro RSI
-rsi_length = int(os.getenv('RSI_LENGTH', '14'))  # Periodo para RSI
-rsi_overbought = int(os.getenv('RSI_OVERBOUGHT', '70'))  # Nivel de sobrecompra
-rsi_oversold = int(os.getenv('RSI_OVERSOLD', '30'))  # Nivel de sobreventa
-usar_macd = os.getenv('USAR_MACD', 'False').lower() == 'true'  # Activar filtro MACD
-macd_fast = int(os.getenv('MACD_FAST', '12'))  # Periodo rápido MACD
-macd_slow = int(os.getenv('MACD_SLOW', '26'))  # Periodo lento MACD
-macd_signal = int(os.getenv('MACD_SIGNAL', '9'))  # Periodo señal MACD
-usar_volumen_filtro = os.getenv('USAR_VOLUMEN_FILTRO', 'False').lower() == 'true'  # Activar filtro de volumen
-volumen_periodos = int(os.getenv('VOLUMEN_PERIODOS', '20'))  # Periodos para promedio de volumen
-usar_multitimeframe = os.getenv('USAR_MULTITIMEFRAME', 'False').lower() == 'true'  # Activar confirmación multi-timeframe
-timeframe_superior = os.getenv('TIMEFRAME_SUPERIOR', '1h')  # Timeframe superior para confirmación
 
-# Configuraciones para nuevas funcionalidades
+# Trailing Stop
 usar_trailing_stop = os.getenv('USAR_TRAILING_STOP', 'False').lower() == 'true'  # Activar trailing stop loss
 trailing_stop_pct = float(os.getenv('TRAILING_STOP_PCT', '0.5'))  # Porcentaje para trailing stop
+
+# Health Check
 health_check_interval = int(os.getenv('HEALTH_CHECK_INTERVAL', '300'))  # Intervalo de health check en segundos (5 min)
 # ===============================
 
@@ -505,9 +526,9 @@ def calcular_senal(df, umbral=None):
     """
     Calcula la señal usando Bandas de Bollinger, ATR, y filtros opcionales.
     
-    Estrategia adaptada de TradingView Pine Script :
-    - Señal LONG: crossover(price, upper_band) cuando ATR < umbral y precio > MA_trend (si está activo)
-    - Señal SHORT: crossunder(price, lower_band) cuando ATR < umbral y precio < MA_trend (si está activo)
+    Estrategia adaptada de TradingView Pine Script (Estrategia Modular DOGE Pro):
+    - Señal LONG: crossover(price, upper_band) cuando filtros están activos
+    - Señal SHORT: crossunder(price, lower_band) cuando filtros están activos
     - TP = ATR * tp_multiplier, SL = ATR * sl_multiplier
     """
     global bb_length, bb_mult, atr_length, umbral_volatilidad, usar_ma_trend, ma_trend_length
@@ -518,13 +539,18 @@ def calcular_senal(df, umbral=None):
         umbral = umbral_volatilidad
 
     df = df.copy()
-    # Bandas BB
+    
+    # ==========================================
+    # === CÁLCULO DE INDICADORES ===
+    # ==========================================
+    
+    # Bandas de Bollinger
     df['ma_bb'] = df['close'].rolling(window=bb_length).mean()
     df['std'] = df['close'].rolling(window=bb_length).std()
     df['upper'] = df['ma_bb'] + bb_mult * df['std']
     df['lower'] = df['ma_bb'] - bb_mult * df['std']
 
-    # ATR
+    # ATR (Average True Range)
     df['prev_close'] = df['close'].shift(1)
     df['tr1'] = df['high'] - df['low']
     df['tr2'] = (df['high'] - df['prev_close']).abs()
@@ -532,7 +558,11 @@ def calcular_senal(df, umbral=None):
     df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
     df['atr'] = df['tr'].rolling(window=atr_length).mean()
 
-    # RSI (opcional)
+    # MA Tendencia (si está habilitada)
+    if usar_ma_trend:
+        df['ma_trend'] = df['close'].rolling(window=ma_trend_length).mean()
+
+    # RSI (si está habilitado)
     if usar_rsi:
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=rsi_length).mean()
@@ -540,19 +570,19 @@ def calcular_senal(df, umbral=None):
         rs = gain / loss
         df['rsi'] = 100 - (100 / (1 + rs))
 
-    # MACD (opcional)
+    # MACD (si está habilitado)
     if usar_macd:
         df['ema_fast'] = df['close'].ewm(span=macd_fast).mean()
         df['ema_slow'] = df['close'].ewm(span=macd_slow).mean()
         df['macd'] = df['ema_fast'] - df['ema_slow']
         df['macd_signal'] = df['macd'].ewm(span=macd_signal).mean()
-        df['macd_hist'] = df['macd'] - df['macd_signal']
 
-    # Filtro de volumen (opcional)
+    # Volumen (si está habilitado)
     if usar_volumen_filtro and 'volume' in df.columns:
         df['volume'] = df['volume'].astype(float)
         df['volume_avg'] = df['volume'].rolling(window=volumen_periodos).mean()
 
+    # Verificar que tenemos suficientes datos
     min_periods = max(bb_length, atr_length, ma_trend_length)
     if usar_rsi:
         min_periods = max(min_periods, rsi_length)
@@ -562,6 +592,7 @@ def calcular_senal(df, umbral=None):
     if len(df) < min_periods + 1:
         return 'neutral'
 
+    # Obtener valores actuales
     close_now = df['close'].iloc[-1]
     close_prev = df['close'].iloc[-2]
     upper_now = df['upper'].iloc[-1]
@@ -570,72 +601,72 @@ def calcular_senal(df, umbral=None):
     lower_prev = df['lower'].iloc[-2]
     atr_now = df['atr'].iloc[-1]
 
-    filtro_volatilidad = (atr_now < umbral)
+    # ==========================================
+    # === CÁLCULO DE FILTROS (MODULAR) ===
+    # ==========================================
+    
+    # Trigger: Bandas de Bollinger (Crossover/Crossunder)
+    f_bb_long = close_prev <= upper_prev and close_now > upper_now
+    f_bb_short = close_prev >= lower_prev and close_now < lower_now
 
-    # filtro MA de tendencia (opcional)
+    # Filtro de Volatilidad (ATR)
+    filtro_volatilidad = atr_now < umbral
+    
+    # Filtro de Tendencia (MA)
     if usar_ma_trend:
-        ma_trend = df['close'].rolling(window=ma_trend_length).mean().iloc[-1]
-        filtro_trend_long = close_now > ma_trend
-        filtro_trend_short = close_now < ma_trend
+        ma_trend_now = df['ma_trend'].iloc[-1]
+        f_ma_long = close_now > ma_trend_now
+        f_ma_short = close_now < ma_trend_now
     else:
-        filtro_trend_long = filtro_trend_short = True
+        f_ma_long = f_ma_short = True
 
-    # Filtro RSI (opcional)
-    filtro_rsi_long = filtro_rsi_short = True
+    # Filtro RSI (Opcional)
+    f_rsi_long = f_rsi_short = True
     if usar_rsi:
         rsi_now = df['rsi'].iloc[-1]
-        filtro_rsi_long = rsi_now < rsi_overbought  # No sobrecomprado para long
-        filtro_rsi_short = rsi_now > rsi_oversold   # No sobrevendido para short
+        f_rsi_long = rsi_now < rsi_overbought  # No sobrecomprado para long
+        f_rsi_short = rsi_now > rsi_oversold   # No sobrevendido para short
 
-    # Filtro MACD (opcional)
-    filtro_macd_long = filtro_macd_short = True
+    # Filtro MACD (Opcional)
+    f_macd_long = f_macd_short = True
     if usar_macd:
         macd_now = df['macd'].iloc[-1]
         macd_signal_now = df['macd_signal'].iloc[-1]
-        filtro_macd_long = macd_now > macd_signal_now  # MACD arriba de señal para long
-        filtro_macd_short = macd_now < macd_signal_now # MACD abajo de señal para short
+        f_macd_long = macd_now > macd_signal_now  # MACD arriba de señal para long
+        f_macd_short = macd_now < macd_signal_now # MACD abajo de señal para short
 
-    # Filtro de volumen (opcional)
-    filtro_volumen = True
+    # Filtro de Volumen (Opcional)
+    f_volumen = True
     if usar_volumen_filtro and 'volume_avg' in df.columns:
         volume_now = df['volume'].iloc[-1]
         volume_avg = df['volume_avg'].iloc[-1]
-        filtro_volumen = volume_now > volume_avg
+        f_volumen = volume_now > volume_avg
 
-    # Multi-timeframe (opcional)
-    filtro_multitimeframe = True
+    # Filtro Multi-Timeframe (Opcional)
+    f_multitimeframe = True
     if usar_multitimeframe:
         try:
-            # Obtener datos del timeframe superior
             df_superior = obtener_datos(symbol, timeframe_superior, limite=50)
             if len(df_superior) >= 10:
                 senal_superior = calcular_senal(df_superior, umbral=umbral_volatilidad)
-                filtro_multitimeframe = senal_superior in ['long', 'short']
+                f_multitimeframe = senal_superior in ['long', 'short']
         except Exception as e:
             log_consola(f"⚠️ Error en multi-timeframe: {e}")
-            filtro_multitimeframe = True  # Si falla, permitir la señal
+            f_multitimeframe = True  # Si falla, permitir la señal
 
-    # Detectar señales de crossover/crossunder (como en Pine Script)
-    # Long: crossover(price, upper) - precio cruza por encima de la banda superior
-    # Short: crossunder(price, lower) - precio cruza por debajo de la banda inferior
-    crossover_long = close_prev <= upper_prev and close_now > upper_now
-    crossunder_short = close_prev >= lower_prev and close_now < lower_now
+    # ==========================================
+    # === CONDICIONES DE ENTRADA ===
+    # ==========================================
+    # Combinar todos los filtros (como en Pine Script)
+    long_condition = (f_bb_long and f_ma_long and f_rsi_long and f_macd_long and f_volumen and 
+                      filtro_volatilidad and f_multitimeframe)
     
-    # Combinar todos los filtros (solo filtros básicos activos por defecto)
-    # La estrategia DOGE solo usa: filtro_volatilidad y filtro_ma_trend
-    if (crossover_long and
-        filtro_volatilidad and filtro_trend_long and 
-        (not usar_rsi or filtro_rsi_long) and
-        (not usar_macd or filtro_macd_long) and
-        (not usar_volumen_filtro or filtro_volumen) and
-        (not usar_multitimeframe or filtro_multitimeframe)):
+    short_condition = (f_bb_short and f_ma_short and f_rsi_short and f_macd_short and f_volumen and 
+                       filtro_volatilidad and f_multitimeframe)
+
+    if long_condition:
         return 'long'
-    elif (crossunder_short and
-          filtro_volatilidad and filtro_trend_short and
-          (not usar_rsi or filtro_rsi_short) and
-          (not usar_macd or filtro_macd_short) and
-          (not usar_volumen_filtro or filtro_volumen) and
-          (not usar_multitimeframe or filtro_multitimeframe)):
+    elif short_condition:
         return 'short'
     else:
         return 'neutral'
