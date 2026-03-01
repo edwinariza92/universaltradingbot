@@ -70,10 +70,7 @@ timeframe_superior = os.getenv('TIMEFRAME_SUPERIOR', '1h')  # Timeframe superior
 # ==========================================
 # === CONFIGURACIÓN DE GESTIÓN DE RIESGOS ===
 # ==========================================
-riesgo_dinamico_reduccion = float(os.getenv('RIESGO_DINAMICO_REDUCCION', '0.5'))  # Reducir riesgo a la mitad tras pérdidas consecutivas
-usar_kelly = os.getenv('USAR_KELLY', 'False').lower() == 'true'  # Activar position sizing basado en Kelly
-kelly_fraction = float(os.getenv('KELLY_FRACTION', '0.5'))  # Usar half-Kelly para reducir riesgo (0.5 = 50% de Kelly)
-riesgo_max_kelly = float(os.getenv('RIESGO_MAX_KELLY', '0.05'))  # Máximo riesgo por operación con Kelly (5%)
+drawdown_max_pct = float(os.getenv('DRAWDOWN_MAX_PCT', '0.05'))  # Máximo drawdown permitido (5%)
 
 # Trailing Stop
 usar_trailing_stop = os.getenv('USAR_TRAILING_STOP', 'False').lower() == 'true'  # Activar trailing stop loss
@@ -170,7 +167,7 @@ def procesar_comando_telegram(comando):
     """Procesa comandos recibidos por Telegram"""
     global bot_activo, bot_thread
     global symbol, intervalo, riesgo_pct, bb_length, bb_mult, atr_length, ma_trend_length, umbral_volatilidad, tp_multiplier, sl_multiplier, usar_ma_trend
-    global riesgo_dinamico_reduccion, usar_kelly, kelly_fraction, riesgo_max_kelly
+    global drawdown_max_pct
     global usar_rsi, rsi_length, rsi_overbought, rsi_oversold, usar_macd, macd_fast, macd_slow, macd_signal
     global usar_volumen_filtro, volumen_periodos, usar_multitimeframe, timeframe_superior
 
@@ -211,13 +208,12 @@ def procesar_comando_telegram(comando):
                 f"• MA Tendencia: {ma_trend_length} ({'ON' if usar_ma_trend else 'OFF'})\n"
                 f"• Umbral ATR: {umbral_volatilidad}\n"
                 f"• TP Mult: {tp_multiplier} | SL Mult: {sl_multiplier}\n"
-                f"• Reducción Riesgo Dinámico: {riesgo_dinamico_reduccion}\n"
-                f"• Kelly: {'ON' if usar_kelly else 'OFF'} (Fracción: {kelly_fraction}, Máx: {riesgo_max_kelly*100:.1f}%)\n"
+                f"• Drawdown Máx: {drawdown_max_pct*100:.1f}%\n"
                 f"• RSI: {'ON' if usar_rsi else 'OFF'} ({rsi_length}/{rsi_overbought}/{rsi_oversold})\n"
                 f"• MACD: {'ON' if usar_macd else 'OFF'} ({macd_fast}/{macd_slow}/{macd_signal})\n"
                 f"• Volumen Filtro: {'ON' if usar_volumen_filtro else 'OFF'} ({volumen_periodos} períodos)\n"
                 f"• Multi-Timeframe: {'ON' if usar_multitimeframe else 'OFF'} ({timeframe_superior})\n"
-                "v05.01.26 ")
+                "v28.02.26 ")
 
     elif comando == "configurar":
         return (
@@ -231,8 +227,7 @@ def procesar_comando_telegram(comando):
             f"• Periodo MA Tendencia: `{ma_trend_length}` ({'ON' if usar_ma_trend else 'OFF'})\n"
             f"• Umbral ATR: `{umbral_volatilidad}`\n"
             f"• TP Mult: `{tp_multiplier}` | SL Mult: `{sl_multiplier}`\n"
-            f"• Reducción Riesgo Dinámico: `{riesgo_dinamico_reduccion}`\n"
-            f"• Kelly: `{'ON' if usar_kelly else 'OFF'}` (Fracción: `{kelly_fraction}`, Máx: `{riesgo_max_kelly*100:.1f}%`)\n"
+            f"• Drawdown Máx: `{drawdown_max_pct*100:.1f}%`\n"
             f"• RSI: `{'ON' if usar_rsi else 'OFF'}` ({rsi_length}/{rsi_overbought}/{rsi_oversold})\n"
             f"• MACD: `{'ON' if usar_macd else 'OFF'}` ({macd_fast}/{macd_slow}/{macd_signal})\n"
             f"• Volumen Filtro: `{'ON' if usar_volumen_filtro else 'OFF'}` ({volumen_periodos} períodos)\n"
@@ -269,20 +264,9 @@ def procesar_comando_telegram(comando):
                 tp_multiplier = float(valor_raw)
             elif param == "sl":
                 sl_multiplier = float(valor_raw)
-            elif param == "riesgodinamico":
-                riesgo_dinamico_reduccion = float(valor_raw)
-            elif param == "kelly":
-                v = valor_raw.lower()
-                if v in ("1", "true", "on", "yes"):
-                    usar_kelly = True
-                elif v in ("0", "false", "off", "no"):
-                    usar_kelly = False
-                else:
-                    return "❌ Valor para kelly no válido. Usa on/off o 1/0."
-            elif param == "kellyfrac":
-                kelly_fraction = float(valor_raw)
-            elif param == "kellymax":
-                riesgo_max_kelly = float(valor_raw) / 100 if float(valor_raw) >= 1 else float(valor_raw)
+            elif param == "drawdownmax":
+                drawdown_max_pct = float(valor_raw) / 100 if float(valor_raw) >= 1 else float(valor_raw)
+
             elif param == "rsi":
                 v = valor_raw.lower()
                 if v in ("1", "true", "on", "yes"):
@@ -1001,69 +985,7 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
     log_consola(f"❌ Todos los métodos fallaron para crear órdenes TP/SL")
     return False
 
-def calcular_kelly_fraction():
-    """Calcula la fracción de Kelly basada en el historial de operaciones"""
-    archivo = 'registro_operaciones.csv'
-    if not os.path.exists(archivo):
-        return 0.0
 
-    profits = []
-    try:
-        with open(archivo, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row.get('Resultado', '').strip() in ['SL', 'TP']:
-                    tipo = row['Tipo']
-                    precio_entrada = float(row['Precio Entrada'])
-                    cantidad = float(row['Cantidad'])
-                    take_profit = float(row['Take Profit'])
-                    stop_loss = float(row['Stop Loss'])
-                    resultado = row['Resultado']
-
-                    if resultado == 'TP':
-                        precio_salida = take_profit
-                    elif resultado == 'SL':
-                        precio_salida = stop_loss
-                    else:
-                        continue
-
-                    if tipo == 'long':
-                        profit = (precio_salida - precio_entrada) * cantidad
-                    elif tipo == 'short':
-                        profit = (precio_entrada - precio_salida) * cantidad
-                    else:
-                        continue
-
-                    profits.append(profit)
-    except Exception as e:
-        log_consola(f"Error leyendo registro para Kelly: {e}")
-        return 0.0
-
-    if len(profits) < 10:  # Necesitamos al menos 10 operaciones para calcular Kelly
-        return 0.0
-
-    wins = [p for p in profits if p > 0]
-    losses = [p for p in profits if p < 0]
-
-    if not wins or not losses:
-        return 0.0
-
-    p = len(wins) / len(profits)
-    avg_win = np.mean(wins)
-    avg_loss = abs(np.mean(losses))
-    b = avg_win / avg_loss if avg_loss > 0 else 0
-
-    if b <= 0:
-        return 0.0
-
-    kelly = (b * p - (1 - p)) / b
-    kelly = max(0, kelly)  # No negativo
-
-    # Aplicar half-Kelly y límite máximo
-    kelly_ajustado = kelly * kelly_fraction
-    kelly_ajustado = min(kelly_ajustado, riesgo_max_kelly)
-
-    return kelly_ajustado
 
 # ============ NUEVAS FUNCIONALIDADES ============
 
@@ -1390,6 +1312,8 @@ def ejecutar_bot_trading():
     ultimo_tp = None
     ultimo_sl = None
     perdidas_consecutivas = 0  # Al inicio de ejecutar_bot_trading
+    drawdown_actual = 0.0  # Drawdown actual
+    saldo_inicial = None  # Saldo inicial para calcular drawdown
     ultimo_health_check = time.time()
     ultimo_trailing_check = time.time()
 
@@ -1623,22 +1547,26 @@ def ejecutar_bot_trading():
                 balance = api_call_with_retry(client.futures_account_balance)
                 saldo_usdt = next((float(b['balance']) for b in balance if b['asset'] == 'USDT'), 0)
 
+                # Establecer saldo inicial si no está establecido
+                if saldo_inicial is None:
+                    saldo_inicial = saldo_usdt
+                    log_consola(f"Saldo inicial establecido: {saldo_inicial} USDT")
+
+                # Calcular drawdown actual
+                drawdown_actual = (saldo_inicial - saldo_usdt) / saldo_inicial if saldo_inicial > 0 else 0
+
                 precio_actual = float(df['close'].iloc[-1])
 
-                # Riesgo dinámico: reducir si hay pérdidas consecutivas
-                riesgo_actual = riesgo_pct
-                if perdidas_consecutivas > 0:
-                    riesgo_actual *= riesgo_dinamico_reduccion
-                    log_consola(f"Riesgo dinámico reducido a {riesgo_actual*100:.2f}% por {perdidas_consecutivas} pérdidas consecutivas.")
+                # Riesgo dinámico basado en drawdown
+                riesgo_actual = riesgo_pct * max(0, 1 - drawdown_actual / drawdown_max_pct)
+                if drawdown_actual > 0:
+                    log_consola(f"Riesgo dinámico ajustado a {riesgo_actual*100:.2f}% por drawdown actual de {drawdown_actual*100:.2f}%")
 
-                # Aplicar Kelly si está activado
-                if usar_kelly:
-                    kelly_calc = calcular_kelly_fraction()
-                    if kelly_calc > 0:
-                        riesgo_actual = min(riesgo_actual, kelly_calc)
-                        log_consola(f"Kelly aplicado: riesgo ajustado a {riesgo_actual*100:.2f}%")
-                    else:
-                        log_consola("Kelly no aplicado: insuficientes datos o cálculo inválido.")
+                # Ajuste adicional por volatilidad: riesgo inversamente proporcional a ATR
+                if atr > 0:
+                    factor_volatilidad = min(2.0, max(0.5, umbral_volatilidad / atr))
+                    riesgo_actual *= factor_volatilidad
+                    log_consola(f"Riesgo ajustado por volatilidad: factor {factor_volatilidad:.2f} (ATR={atr:.6f}), riesgo final {riesgo_actual*100:.2f}%")
 
                 if senal == 'long':
                     sl = precio_actual - atr * sl_multiplier
@@ -1676,6 +1604,7 @@ def ejecutar_bot_trading():
                     mensaje_orden += f"📊 Símbolo: {symbol}\n"
                     mensaje_orden += f"💰 Precio entrada: {precio_entrada:.4f}\n"
                     mensaje_orden += f"📦 Cantidad: {cantidad_real}\n"
+                    mensaje_orden += f"⚠️ Riesgo aplicado: {riesgo_actual*100:.2f}%\n"
                     mensaje_orden += f"🎯 Take Profit: {tp:.4f}\n"
                     mensaje_orden += f"🛑 Stop Loss: {sl:.4f}"
                     enviar_telegram(mensaje_orden)
