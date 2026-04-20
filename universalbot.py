@@ -185,11 +185,12 @@ def obtener_ultimos_mensajes(num_mensajes=10):
 
 def procesar_comando_telegram(comando):
     """Procesa comandos recibidos por Telegram"""
-    global bot_activo, bot_thread
+    global bot_activo, bot_thread, modo_papel
     global symbol, intervalo, riesgo_pct, bb_length, bb_mult, atr_length, ma_trend_length, umbral_volatilidad, tp_multiplier, sl_multiplier, usar_ma_trend
     global drawdown_max_pct
     global usar_rsi, rsi_length, rsi_overbought, rsi_oversold, usar_macd, macd_fast, macd_slow, macd_signal
     global usar_volumen_filtro, volumen_periodos, usar_multitimeframe, timeframe_superior
+    global saldo_papel, pnl_papel_total, operaciones_papel_count, posicion_papel
 
     comando = comando.lower().strip()
 
@@ -406,12 +407,10 @@ def procesar_comando_telegram(comando):
         return cancelar_operaciones(symbol)
     
     elif comando == "papel_on":
-        global modo_papel
         modo_papel = True
         return "✅ **Modo PAPEL ACTIVADO** 📄\n\nEl bot ahora simula operaciones sin usar dinero real.\nUsa `paper` para ver el resumen."
     
     elif comando == "papel_off":
-        global modo_papel
         if posicion_papel['abierta']:
             return "⚠️ No se puede desactivar el modo papel con posiciones abiertas.\nCierra la posición primero o espera a que se complete."
         modo_papel = False
@@ -423,7 +422,6 @@ def procesar_comando_telegram(comando):
         return obtener_resumen_papel()
     
     elif comando == "papel_reset":
-        global saldo_papel, pnl_papel_total, operaciones_papel_count, posicion_papel
         if posicion_papel['abierta']:
             return "⚠️ No se puede resetear con una posición abierta."
         saldo_papel = saldo_inicial_papel
