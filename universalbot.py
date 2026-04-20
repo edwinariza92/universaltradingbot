@@ -78,7 +78,13 @@ trailing_stop_pct = float(os.getenv('TRAILING_STOP_PCT', '0.5'))  # Porcentaje p
 
 # Health Check
 health_check_interval = int(os.getenv('HEALTH_CHECK_INTERVAL', '300'))  # Intervalo de health check en segundos (5 min)
-# ===============================
+
+# ==========================================
+# === CONFIGURACIÓN MODO PAPEL ===
+# ==========================================
+modo_papel = os.getenv('MODO_PAPEL', 'False').lower() == 'true'  # Activar modo simulación
+saldo_inicial_papel = float(os.getenv('SALDO_INICIAL_PAPEL', '1000'))  # Saldo inicial para papel trading
+# ==============================
 
 def api_call_with_retry(func, *args, **kwargs):
     """Ejecuta una llamada a la API con reintentos en caso de errores de conexión"""
@@ -113,6 +119,20 @@ registro_lock = threading.Lock()  # Lock para proteger escritura del CSV
 ultimo_tp = None  # Para almacenar el TP de la última operación
 ultimo_sl = None  # Para almacenar el SL de la última operación
 alerta_sin_tp_sl_enviada = False  # Control para enviar la alerta de posición sin TP/SL solo una vez
+
+# === Variables para Modo Papel ===
+posicion_papel = {
+    'abierta': False,
+    'tipo': None,  # 'long' o 'short'
+    'precio_entrada': 0,
+    'cantidad': 0,
+    'tp': 0,
+    'sl': 0,
+    'fecha_apertura': None
+}
+saldo_papel = saldo_inicial_papel  # Saldo disponible para modo papel
+pnl_papel_total = 0  # PnL acumulado en modo papel
+operaciones_papel_count = 0  # Contador de operaciones
 # ===================================
 
 def enviar_telegram(mensaje):
@@ -199,9 +219,11 @@ def procesar_comando_telegram(comando):
 
     elif comando == "estado":
         estado = "🟢 ACTIVO" if bot_activo else "🔴 DETENIDO"
+        modo_indicador = "📄 PAPEL" if modo_papel else "💰 REAL"
         return (f"🤖 **Estado del Bot:** {estado}\n"
                 f"📊 Símbolo: {symbol}\n"
                 f"⏱️ Intervalo: {intervalo}\n"
+                f"{modo_indicador} **Modo:** {'Simulación' if modo_papel else 'Dinero Real'}\n"
                 f"• Riesgo: {riesgo_pct}\n"
                 f"• BB: {bb_length} / {bb_mult}\n"
                 f"• ATR: {atr_length}\n"
@@ -382,6 +404,32 @@ def procesar_comando_telegram(comando):
 
     elif comando == "cancelar":
         return cancelar_operaciones(symbol)
+    
+    elif comando == "papel_on":
+        global modo_papel
+        modo_papel = True
+        return "✅ **Modo PAPEL ACTIVADO** 📄\n\nEl bot ahora simula operaciones sin usar dinero real.\nUsa `paper` para ver el resumen."
+    
+    elif comando == "papel_off":
+        global modo_papel
+        if posicion_papel['abierta']:
+            return "⚠️ No se puede desactivar el modo papel con posiciones abiertas.\nCierra la posición primero o espera a que se complete."
+        modo_papel = False
+        return "✅ **Modo PAPEL DESACTIVADO** ⚠️\n\nDe aquí en adelante, el bot operará con dinero real."
+    
+    elif comando == "paper" or comando == "papel":
+        if not modo_papel:
+            return "⚠️ El modo papel no está activado.\nUsa `papel_on` para activarlo."
+        return obtener_resumen_papel()
+    
+    elif comando == "papel_reset":
+        global saldo_papel, pnl_papel_total, operaciones_papel_count, posicion_papel
+        if posicion_papel['abierta']:
+            return "⚠️ No se puede resetear con una posición abierta."
+        saldo_papel = saldo_inicial_papel
+        pnl_papel_total = 0
+        operaciones_papel_count = 0
+        return f"🔄 Modo papel reseteado.\n💰 Saldo inicial: ${saldo_inicial_papel:.2f}"
 
     else:
         return """🤖 **Comandos disponibles:**
@@ -402,6 +450,12 @@ def procesar_comando_telegram(comando):
 • `descargar_registro` - Descarga el registro de operaciones (CSV)
 • `eliminar_registro` - Elimina el registro de operaciones
 • `cancelar` - Cierra la posición abierta y cancela órdenes TP/SL pendientes
+
+📄 **Modo Papel:**
+• `papel_on` - Activa el modo simulación (sin dinero real)
+• `papel_off` - Desactiva el modo papel
+• `paper` o `papel` - Muestra resumen del modo papel
+• `papel_reset` - Resetea el saldo y operaciones del modo papel
 """
 
 def bot_telegram_control():
@@ -735,6 +789,184 @@ def registrar_operacion(fecha, tipo, precio_entrada, cantidad, tp, sl, resultado
                 writer.writerow(['Fecha', 'Símbolo', 'Tipo', 'Precio Entrada', 'Cantidad', 'Take Profit', 'Stop Loss', 'Resultado', 'PnL'])
             writer.writerow([fecha, symbol, tipo, precio_entrada, cantidad, tp, sl, resultado if resultado else "", pnl if pnl is not None else ""])
 
+# ==========================================
+# === FUNCIONES MODO PAPEL ===
+# ==========================================
+
+def registrar_operacion_papel(fecha, tipo, precio_entrada, cantidad, tp, sl, resultado=None, pnl=None):
+    """Registra una operación en el CSV de papel trading"""
+    archivo = 'registro_operaciones_papel.csv'
+    with registro_lock:
+        existe = os.path.isfile(archivo)
+        with open(archivo, mode='a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if not existe:
+                writer.writerow(['Fecha', 'Símbolo', 'Tipo', 'Precio Entrada', 'Cantidad', 'Take Profit', 'Stop Loss', 'Resultado', 'PnL'])
+            writer.writerow([fecha, symbol, tipo, precio_entrada, cantidad, tp, sl, resultado if resultado else "", pnl if pnl is not None else ""])
+
+def simular_operacion_papel(senal, simbolo, cantidad, precio_actual, atr_value):
+    """
+    Simula una operación en modo papel (sin enviar a Binance).
+    Retorna (precio_entrada, cantidad_real) o (None, None) si falla.
+    """
+    global posicion_papel, saldo_papel
+    
+    try:
+        if posicion_papel['abierta']:
+            log_consola(f"⚠️ [PAPEL] Ya hay una posición abierta en modo papel. No se puede abrir otra.")
+            return None, None
+        
+        # Calcular TP y SL
+        distancia_sl = atr_value * sl_multiplier
+        distancia_tp = atr_value * tp_multiplier
+        
+        if senal == 'long':
+            tp_simulado = precio_actual + distancia_tp
+            sl_simulado = precio_actual - distancia_sl
+        else:  # short
+            tp_simulado = precio_actual - distancia_tp
+            sl_simulado = precio_actual + distancia_sl
+        
+        # Validar cantidad
+        if cantidad <= 0:
+            log_consola(f"❌ [PAPEL] Cantidad inválida: {cantidad}")
+            return None, None
+        
+        # Abrir posición simulada
+        posicion_papel['abierta'] = True
+        posicion_papel['tipo'] = senal
+        posicion_papel['precio_entrada'] = precio_actual
+        posicion_papel['cantidad'] = cantidad
+        posicion_papel['tp'] = tp_simulado
+        posicion_papel['sl'] = sl_simulado
+        posicion_papel['fecha_apertura'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        log_consola(f"📄 [PAPEL] Operación {senal.upper()} simulada a {precio_actual:.4f} USDT (cantidad: {cantidad:.3f})")
+        log_consola(f"   TP: {tp_simulado:.4f} | SL: {sl_simulado:.4f}")
+        
+        return precio_actual, cantidad
+        
+    except Exception as e:
+        log_consola(f"❌ [PAPEL] Error en simulación: {e}")
+        return None, None
+
+def actualizar_posicion_papel():
+    """
+    Actualiza la posición simulada según el precio actual.
+    Cierra la posición si toca TP o SL.
+    """
+    global posicion_papel, saldo_papel, pnl_papel_total, operaciones_papel_count
+    
+    if not posicion_papel['abierta']:
+        return
+    
+    try:
+        # Obtener precio actual
+        precio_ticker = api_call_with_retry(client.futures_symbol_ticker, symbol=symbol)
+        precio_actual = float(precio_ticker['price'])
+        
+        tipo = posicion_papel['tipo']
+        precio_entrada = posicion_papel['precio_entrada']
+        cantidad = posicion_papel['cantidad']
+        tp = posicion_papel['tp']
+        sl = posicion_papel['sl']
+        
+        # Verificar si se alcanzó TP o SL
+        resultado = None
+        pnl = 0
+        precio_salida = None
+        
+        if tipo == 'long':
+            if precio_actual >= tp:
+                resultado = 'TP'
+                precio_salida = tp
+                pnl = (tp - precio_entrada) * cantidad
+            elif precio_actual <= sl:
+                resultado = 'SL'
+                precio_salida = sl
+                pnl = (sl - precio_entrada) * cantidad
+        else:  # short
+            if precio_actual <= tp:
+                resultado = 'TP'
+                precio_salida = tp
+                pnl = (precio_entrada - tp) * cantidad
+            elif precio_actual >= sl:
+                resultado = 'SL'
+                precio_salida = sl
+                pnl = (precio_entrada - sl) * cantidad
+        
+        # Si se alcanzó TP o SL, cerrar posición
+        if resultado:
+            saldo_papel += pnl
+            pnl_papel_total += pnl
+            operaciones_papel_count += 1
+            
+            # Registrar operación cerrada
+            registrar_operacion_papel(
+                fecha=posicion_papel['fecha_apertura'],
+                tipo=tipo,
+                precio_entrada=precio_entrada,
+                cantidad=cantidad,
+                tp=tp,
+                sl=sl,
+                resultado=resultado,
+                pnl=round(pnl, 4)
+            )
+            
+            emoji_resultado = "✅" if resultado == 'TP' else "⚠️"
+            log_consola(f"{emoji_resultado} [PAPEL] Posición cerrada por {resultado} en ${precio_salida:.4f}")
+            log_consola(f"   PnL: ${pnl:.4f} | Saldo: ${saldo_papel:.2f}")
+            
+            # Resetear posición
+            posicion_papel['abierta'] = False
+            posicion_papel['tipo'] = None
+            posicion_papel['precio_entrada'] = 0
+            posicion_papel['cantidad'] = 0
+            posicion_papel['tp'] = 0
+            posicion_papel['sl'] = 0
+            posicion_papel['fecha_apertura'] = None
+    
+    except Exception as e:
+        log_consola(f"❌ [PAPEL] Error actualizando posición: {e}")
+
+def obtener_resumen_papel():
+    """Obtiene un resumen de la performance en modo papel"""
+    global saldo_papel, saldo_inicial_papel, pnl_papel_total, operaciones_papel_count, posicion_papel
+    
+    ganancia = saldo_papel - saldo_inicial_papel
+    roi = (ganancia / saldo_inicial_papel * 100) if saldo_inicial_papel > 0 else 0
+    
+    mensaje = "📄 **MODO PAPEL TRADING** 📄\n\n"
+    mensaje += f"💰 **Saldo Inicial:** ${saldo_inicial_papel:.2f}\n"
+    mensaje += f"💵 **Saldo Actual:** ${saldo_papel:.2f}\n"
+    mensaje += f"📊 **PnL Total:** ${pnl_papel_total:.4f}\n"
+    mensaje += f"📈 **ROI:** {roi:.2f}%\n"
+    mensaje += f"📝 **Operaciones Cerradas:** {operaciones_papel_count}\n"
+    
+    if posicion_papel['abierta']:
+        precio_actual = float(api_call_with_retry(client.futures_symbol_ticker, symbol=symbol)['price'])
+        precio_entrada = posicion_papel['precio_entrada']
+        pnl_actual = 0
+        
+        if posicion_papel['tipo'] == 'long':
+            pnl_actual = (precio_actual - precio_entrada) * posicion_papel['cantidad']
+        else:
+            pnl_actual = (precio_entrada - precio_actual) * posicion_papel['cantidad']
+        
+        mensaje += f"\n🎯 **Posición Abierta:**\n"
+        mensaje += f"• Tipo: {posicion_papel['tipo'].upper()}\n"
+        mensaje += f"• Entrada: ${precio_entrada:.4f}\n"
+        mensaje += f"• Actual: ${precio_actual:.4f}\n"
+        mensaje += f"• PnL Actual: ${pnl_actual:.4f}\n"
+        mensaje += f"• TP: ${posicion_papel['tp']:.4f}\n"
+        mensaje += f"• SL: ${posicion_papel['sl']:.4f}\n"
+    else:
+        mensaje += f"\n✅ Sin posiciones abiertas"
+    
+    return mensaje
+
+# ==============================
+
 def obtener_precisiones(symbol):
     info = api_call_with_retry(client.futures_exchange_info)
     cantidad_decimales = 3
@@ -822,6 +1054,10 @@ def crear_orden_oco(symbol, side, quantity, tp_price, sl_price):
         error_msg = str(e)
         log_consola(f"❌ Error creando orden OCO: {error_msg}")
         log_consola(f"   Detalles: symbol={symbol}, side={side}, quantity={quantity}, tp={tp_price}, sl={sl_price}")
+        try:
+            enviar_telegram(f"🚨 Error OCO TP/SL en {symbol}: {error_msg}\nside={side}, cantidad={quantity}, tp={tp_price}, sl={sl_price}")
+        except Exception:
+            pass
         return None
 
 def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
@@ -831,6 +1067,7 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
     Retorna True si ambas órdenes se crearon correctamente, False en caso contrario.
     """
     global alerta_sin_tp_sl_enviada
+    errores_tp_sl = []
     cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
     tp_price_rounded = round(tp_price, precio_decimales)
     sl_price_rounded = round(sl_price, precio_decimales)
@@ -862,14 +1099,16 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
         alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
         return True
     except Exception as e:
-        log_consola(f"⚠️ Método 1 falló: {str(e)}")
+        err = f"Método 1: {str(e)}"
+        errores_tp_sl.append(err)
+        log_consola(f"⚠️ {err}")
         # Limpiar si se creó alguna orden
         try:
             ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
             for orden in ordenes:
                 if orden['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET']:
                     api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
-        except:
+        except Exception:
             pass
     
     # Método 2: Usar reduceOnly=True con quantity
@@ -898,14 +1137,16 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
         alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
         return True
     except Exception as e:
-        log_consola(f"⚠️ Método 2 falló: {str(e)}")
+        err = f"Método 2: {str(e)}"
+        errores_tp_sl.append(err)
+        log_consola(f"⚠️ {err}")
         # Limpiar si se creó alguna orden
         try:
             ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
             for orden in ordenes:
                 if orden['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET']:
                     api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
-        except:
+        except Exception:
             pass
     
     # Método 3: Crear TP como LIMIT y SL como STOP_MARKET
@@ -936,14 +1177,16 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
         alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
         return True
     except Exception as e:
-        log_consola(f"⚠️ Método 3 falló: {str(e)}")
+        err = f"Método 3: {str(e)}"
+        errores_tp_sl.append(err)
+        log_consola(f"⚠️ {err}")
         # Limpiar si se creó alguna orden
         try:
             ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
             for orden in ordenes:
                 if orden['type'] in ['LIMIT', 'TAKE_PROFIT_MARKET', 'STOP_MARKET']:
                     api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
-        except:
+        except Exception:
             pass
     
     # Método 4: Crear solo SL primero, luego TP
@@ -972,17 +1215,23 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
         alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
         return True
     except Exception as e:
-        log_consola(f"⚠️ Método 4 falló: {str(e)}")
+        err = f"Método 4: {str(e)}"
+        errores_tp_sl.append(err)
+        log_consola(f"⚠️ {err}")
         # Limpiar si se creó alguna orden
         try:
             ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
             for orden in ordenes:
                 if orden['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET']:
                     api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
-        except:
+        except Exception:
             pass
     
     log_consola(f"❌ Todos los métodos fallaron para crear órdenes TP/SL")
+    try:
+        enviar_telegram(f"🚨 Falla al crear TP/SL en {symbol} (métodos 1-4). Errores:\n" + "\n".join(errores_tp_sl))
+    except Exception:
+        pass
     return False
 
 
@@ -1596,7 +1845,12 @@ def ejecutar_bot_trading():
 
                 log_consola(f"💰 Saldo disponible: {saldo_usdt} USDT | Usando {cantidad} contratos para la operación ({riesgo_actual*100:.1f}% de riesgo, SL={sl:.4f}, TP={tp:.4f})")
 
-                precio_entrada, cantidad_real = ejecutar_orden(senal, symbol, cantidad)
+                # Ejecutar orden (modo real o simulado)
+                if modo_papel:
+                    log_consola(f"📄 **MODO PAPEL ACTIVADO** - La operación será simulada")
+                    precio_entrada, cantidad_real = simular_operacion_papel(senal, symbol, cantidad, precio_actual, atr)
+                else:
+                    precio_entrada, cantidad_real = ejecutar_orden(senal, symbol, cantidad)
 
                 if precio_entrada:
                     # Notificar inmediatamente que se ejecutó la orden
@@ -1668,33 +1922,38 @@ def ejecutar_bot_trading():
                     
                     log_consola(f"📊 Precios finales validados: TP={tp:.{precio_decimales}f}, SL={sl:.{precio_decimales}f}")
                     
-                    # Intentar crear órdenes TP/SL con múltiples métodos
-                    side_oco = 'SELL' if senal == 'long' else 'BUY'
-                    ordenes_creadas = False
-                    
-                    # Método 1: Intentar OCO primero (más eficiente si funciona)
-                    log_consola("🔧 Método 1: Intentando crear orden OCO...")
-                    oco_order = crear_orden_oco(symbol, side_oco, cantidad_real, tp, sl)
-                    
-                    if oco_order is not None:
-                        log_consola("✅ Orden OCO creada correctamente.")
+                    # En modo papel, las órdenes TP/SL se simulan automáticamente
+                    if modo_papel:
+                        log_consola(f"📄 Modo papel: Los precios TP/SL están configurados para la simulación automática.")
                         ordenes_creadas = True
                     else:
-                        # Método 2: Si falla OCO, usar órdenes separadas con múltiples métodos alternativos
-                        log_consola("⚠️ OCO falló, intentando métodos alternativos...")
-                        ordenes_creadas = crear_ordenes_tp_sl_separadas(symbol, side_oco, cantidad_real, tp, sl)
+                        # Intentar crear órdenes TP/SL con múltiples métodos (solo en modo real)
+                        side_oco = 'SELL' if senal == 'long' else 'BUY'
+                        ordenes_creadas = False
                         
-                        if not ordenes_creadas:
-                            # Si todos los métodos fallan, notificar pero NO cerrar la posición
-                            log_consola("❌ Error: Todos los métodos fallaron. La posición queda abierta sin protección.")
-                            enviar_telegram(f"🚨 **ALERTA CRÍTICA**: No se pudieron crear órdenes TP/SL para {symbol} después de intentar múltiples métodos.\n"
-                                          f"La posición está abierta sin protección. Por favor, revisa y cierra manualmente si es necesario.\n"
-                                          f"Precio entrada: {precio_entrada:.4f}\n"
-                                          f"TP objetivo: {tp:.4f}\n"
-                                          f"SL objetivo: {sl:.4f}")
-                            # Continuar con la posición abierta - el usuario puede cerrarla manualmente
+                        # Método 1: Intentar OCO primero (más eficiente si funciona)
+                        log_consola("🔧 Método 1: Intentando crear orden OCO...")
+                        oco_order = crear_orden_oco(symbol, side_oco, cantidad_real, tp, sl)
+                        
+                        if oco_order is not None:
+                            log_consola("✅ Orden OCO creada correctamente.")
+                            ordenes_creadas = True
                         else:
-                            log_consola("✅ Órdenes TP/SL creadas usando método alternativo.")
+                            # Método 2: Si falla OCO, usar órdenes separadas con múltiples métodos alternativos
+                            log_consola("⚠️ OCO falló, intentando métodos alternativos...")
+                            ordenes_creadas = crear_ordenes_tp_sl_separadas(symbol, side_oco, cantidad_real, tp, sl)
+                            
+                            if not ordenes_creadas:
+                                # Si todos los métodos fallan, notificar pero NO cerrar la posición
+                                log_consola("❌ Error: Todos los métodos fallaron. La posición queda abierta sin protección.")
+                                enviar_telegram(f"🚨 **ALERTA CRÍTICA**: No se pudieron crear órdenes TP/SL para {symbol} después de intentar múltiples métodos.\n"
+                                              f"La posición está abierta sin protección. Por favor, revisa y cierra manualmente si es necesario.\n"
+                                              f"Precio entrada: {precio_entrada:.4f}\n"
+                                              f"TP objetivo: {tp:.4f}\n"
+                                              f"SL objetivo: {sl:.4f}")
+                                # Continuar con la posición abierta - el usuario puede cerrarla manualmente
+                            else:
+                                log_consola("✅ Órdenes TP/SL creadas usando método alternativo.")
 
                     ultima_posicion_cerrada = False
                     hubo_posicion_abierta = True
@@ -1712,7 +1971,8 @@ def ejecutar_bot_trading():
                     log_consola(f"🎯 Take Profit: {tp:.4f} | 🛑 Stop Loss: {sl:.4f}")
                 else:
                     log_consola(f"❌ No se pudo ejecutar la orden {senal.upper()}.")
-                    enviar_telegram(f"❌ Error: No se pudo ejecutar la orden {senal.upper()} para {symbol}.")
+                    if not modo_papel:
+                        enviar_telegram(f"❌ Error: No se pudo ejecutar la orden {senal.upper()} para {symbol}.")
             
             # Health Check periódico
             tiempo_actual = time.time()
@@ -1727,6 +1987,10 @@ def ejecutar_bot_trading():
                 if tiempo_actual - ultimo_trailing_check >= 60:  # Verificar cada minuto
                     aplicar_trailing_stop(symbol, datos_ultima_operacion)
                     ultimo_trailing_check = tiempo_actual
+            
+            # Actualizar posición en modo papel
+            if modo_papel:
+                actualizar_posicion_papel()
 
             time.sleep(60)
 
