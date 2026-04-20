@@ -235,7 +235,7 @@ def procesar_comando_telegram(comando):
                 f"• MACD: {'ON' if usar_macd else 'OFF'} ({macd_fast}/{macd_slow}/{macd_signal})\n"
                 f"• Volumen Filtro: {'ON' if usar_volumen_filtro else 'OFF'} ({volumen_periodos} períodos)\n"
                 f"• Multi-Timeframe: {'ON' if usar_multitimeframe else 'OFF'} ({timeframe_superior})\n"
-                "v28.02.26 ")
+                "v20.04.26 ")
 
     elif comando == "configurar":
         return (
