@@ -190,6 +190,7 @@ def procesar_comando_telegram(comando):
     global drawdown_max_pct
     global usar_rsi, rsi_length, rsi_overbought, rsi_oversold, usar_macd, macd_fast, macd_slow, macd_signal
     global usar_volumen_filtro, volumen_periodos, usar_multitimeframe, timeframe_superior
+    global usar_trailing_stop, trailing_stop_pct
     global saldo_papel, pnl_papel_total, operaciones_papel_count, posicion_papel
 
     comando = comando.lower().strip()
@@ -236,6 +237,7 @@ def procesar_comando_telegram(comando):
                 f"• MACD: {'ON' if usar_macd else 'OFF'} ({macd_fast}/{macd_slow}/{macd_signal})\n"
                 f"• Volumen Filtro: {'ON' if usar_volumen_filtro else 'OFF'} ({volumen_periodos} períodos)\n"
                 f"• Multi-Timeframe: {'ON' if usar_multitimeframe else 'OFF'} ({timeframe_superior})\n"
+                f"• Trailing Stop: {'ON' if usar_trailing_stop else 'OFF'} ({trailing_stop_pct}%)\n"
                 "v20.04.26 ")
 
     elif comando == "configurar":
@@ -254,7 +256,8 @@ def procesar_comando_telegram(comando):
             f"• RSI: `{'ON' if usar_rsi else 'OFF'}` ({rsi_length}/{rsi_overbought}/{rsi_oversold})\n"
             f"• MACD: `{'ON' if usar_macd else 'OFF'}` ({macd_fast}/{macd_slow}/{macd_signal})\n"
             f"• Volumen Filtro: `{'ON' if usar_volumen_filtro else 'OFF'}` ({volumen_periodos} períodos)\n"
-            f"• Multi-Timeframe: `{'ON' if usar_multitimeframe else 'OFF'}` ({timeframe_superior})\n\n"
+            f"• Multi-Timeframe: `{'ON' if usar_multitimeframe else 'OFF'}` ({timeframe_superior})\n"
+            f"• Trailing Stop: `{'ON' if usar_trailing_stop else 'OFF'}` ({trailing_stop_pct}%)\n\n"
             "Para cambiar un parámetro, escribe:\n"
             "`set parametro valor`\n"
             "Ejemplo: `set simbolo BTCUSDT`"
@@ -338,6 +341,19 @@ def procesar_comando_telegram(comando):
                     return "❌ Valor para multitimeframe no válido. Usa on/off o 1/0."
             elif param == "timeframesuperior":
                 timeframe_superior = valor_raw
+            elif param == "trailing":
+                v = valor_raw.lower()
+                if v in ("1", "true", "on", "yes"):
+                    usar_trailing_stop = True
+                elif v in ("0", "false", "off", "no"):
+                    usar_trailing_stop = False
+                else:
+                    return "❌ Valor para trailing no válido. Usa on/off o 1/0."
+            elif param == "trailingpct":
+                nuevo_pct = float(valor_raw)
+                if nuevo_pct <= 0 or nuevo_pct > 50:
+                    return "❌ trailingpct debe estar entre 0 y 50 (porcentaje)."
+                trailing_stop_pct = nuevo_pct
             else:
                 return "❌ Parámetro no reconocido."
             return f"✅ Parámetro `{param}` actualizado a `{valor_raw}`."
@@ -429,6 +445,14 @@ def procesar_comando_telegram(comando):
         operaciones_papel_count = 0
         return f"🔄 Modo papel reseteado.\n💰 Saldo inicial: ${saldo_inicial_papel:.2f}"
 
+    elif comando == "trailing_on":
+        usar_trailing_stop = True
+        return f"✅ Trailing Stop **ACTIVADO** ({trailing_stop_pct}%)\n⚠️ Solo afecta a operaciones en modo REAL."
+
+    elif comando == "trailing_off":
+        usar_trailing_stop = False
+        return "✅ Trailing Stop **DESACTIVADO**"
+
     else:
         return """🤖 **Comandos disponibles:**
 
@@ -454,6 +478,11 @@ def procesar_comando_telegram(comando):
 • `papel_off` - Desactiva el modo papel
 • `paper` o `papel` - Muestra resumen del modo papel
 • `papel_reset` - Resetea el saldo y operaciones del modo papel
+
+📈 **Trailing Stop:**
+• `trailing_on` - Activa el trailing stop (solo modo REAL)
+• `trailing_off` - Desactiva el trailing stop
+• `set trailingpct 1.5` - Cambia el porcentaje (ej: 1.5%)
 """
 
 def bot_telegram_control():
@@ -814,6 +843,20 @@ def simular_operacion_papel(senal, simbolo, cantidad, precio_actual, atr_value):
             log_consola(f"⚠️ [PAPEL] Ya hay una posición abierta en modo papel. No se puede abrir otra.")
             return None, None
         
+        # Validar cantidad
+        if cantidad <= 0:
+            log_consola(f"❌ [PAPEL] Cantidad inválida: {cantidad}")
+            return None, None
+
+        # Validar saldo suficiente (notional <= saldo en modo papel, sin apalancamiento simulado)
+        notional = cantidad * precio_actual
+        if notional > saldo_papel:
+            log_consola(
+                f"❌ [PAPEL] Saldo insuficiente para abrir {simbolo}: "
+                f"notional={notional:.2f} USDT, saldo={saldo_papel:.2f} USDT"
+            )
+            return None, None
+
         # Calcular TP y SL
         distancia_sl = atr_value * sl_multiplier
         distancia_tp = atr_value * tp_multiplier
@@ -825,11 +868,6 @@ def simular_operacion_papel(senal, simbolo, cantidad, precio_actual, atr_value):
             tp_simulado = precio_actual - distancia_tp
             sl_simulado = precio_actual + distancia_sl
         
-        # Validar cantidad
-        if cantidad <= 0:
-            log_consola(f"❌ [PAPEL] Cantidad inválida: {cantidad}")
-            return None, None
-        
         # Abrir posición simulada
         posicion_papel['abierta'] = True
         posicion_papel['tipo'] = senal
@@ -839,7 +877,7 @@ def simular_operacion_papel(senal, simbolo, cantidad, precio_actual, atr_value):
         posicion_papel['sl'] = sl_simulado
         posicion_papel['fecha_apertura'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
-        log_consola(f"📄 [PAPEL] Operación {senal.upper()} simulada a {precio_actual:.4f} USDT (cantidad: {cantidad:.3f})")
+        log_consola(f"📄 [PAPEL] Operación {senal.upper()} simulada en {simbolo} a {precio_actual:.4f} USDT (cantidad: {cantidad:.3f})")
         log_consola(f"   TP: {tp_simulado:.4f} | SL: {sl_simulado:.4f}")
         
         return precio_actual, cantidad
@@ -965,6 +1003,16 @@ def obtener_resumen_papel():
 
 # ==============================
 
+def _contar_decimales(valor):
+    """Cuenta los decimales reales de un tamaño/tick (ej: 0.5 -> 1, 0.005 -> 3, 10 -> 0)."""
+    try:
+        s = f"{float(valor):.10f}".rstrip('0').rstrip('.')
+        if '.' in s:
+            return len(s.split('.')[1])
+        return 0
+    except Exception:
+        return 0
+
 def obtener_precisiones(symbol):
     info = api_call_with_retry(client.futures_exchange_info)
     cantidad_decimales = 3
@@ -974,10 +1022,10 @@ def obtener_precisiones(symbol):
             for f in s['filters']:
                 if f['filterType'] == 'LOT_SIZE':
                     step_size = float(f['stepSize'])
-                    cantidad_decimales = abs(int(np.log10(step_size)))
+                    cantidad_decimales = _contar_decimales(step_size)
                 if f['filterType'] == 'PRICE_FILTER':
                     tick_size = float(f['tickSize'])
-                    precio_decimales = abs(int(np.log10(tick_size)))
+                    precio_decimales = _contar_decimales(tick_size)
     return cantidad_decimales, precio_decimales
 
 def validar_distancia_minima(symbol, precio_entrada, precio_objetivo, tipo='TP'):
@@ -1073,52 +1121,15 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
     
     log_consola(f"🔧 Intentando crear órdenes TP/SL separadas: TP={tp_price_rounded:.{precio_decimales}f}, SL={sl_price_rounded:.{precio_decimales}f}, Quantity={quantity_rounded:.{cantidad_decimales}f}")
     
-    # Método 1: Usar closePosition=True (sin quantity) - Más confiable
+    # Método 2: Usar closePosition=True (sin quantity) - Más confiable
     try:
-        log_consola("📝 Método 1: Intentando con closePosition=True...")
+        log_consola("📝 Método 2: Intentando con closePosition=True...")
         tp_order = api_call_with_retry(client.futures_create_order,
             symbol=symbol,
             side=side,
             type='TAKE_PROFIT_MARKET',
             stopPrice=tp_price_rounded,
             closePosition=True
-        )
-        log_consola(f"✅ Orden TP creada (Método 1): {tp_price_rounded:.4f}")
-        
-        sl_order = api_call_with_retry(client.futures_create_order,
-            symbol=symbol,
-            side=side,
-            type='STOP_MARKET',
-            stopPrice=sl_price_rounded,
-            closePosition=True
-        )
-        log_consola(f"✅ Orden SL creada (Método 1): {sl_price_rounded:.4f}")
-        log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 1)")
-        alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
-        return True
-    except Exception as e:
-        err = f"Método 1: {str(e)}"
-        errores_tp_sl.append(err)
-        log_consola(f"⚠️ {err}")
-        # Limpiar si se creó alguna orden
-        try:
-            ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
-            for orden in ordenes:
-                if orden['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET']:
-                    api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
-        except Exception:
-            pass
-    
-    # Método 2: Usar reduceOnly=True con quantity
-    try:
-        log_consola("📝 Método 2: Intentando con reduceOnly=True y quantity...")
-        tp_order = api_call_with_retry(client.futures_create_order,
-            symbol=symbol,
-            side=side,
-            type='TAKE_PROFIT_MARKET',
-            stopPrice=tp_price_rounded,
-            quantity=quantity_rounded,
-            reduceOnly=True
         )
         log_consola(f"✅ Orden TP creada (Método 2): {tp_price_rounded:.4f}")
         
@@ -1127,8 +1138,7 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
             side=side,
             type='STOP_MARKET',
             stopPrice=sl_price_rounded,
-            quantity=quantity_rounded,
-            reduceOnly=True
+            closePosition=True
         )
         log_consola(f"✅ Orden SL creada (Método 2): {sl_price_rounded:.4f}")
         log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 2)")
@@ -1147,20 +1157,18 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
         except Exception:
             pass
     
-    # Método 3: Crear TP como LIMIT y SL como STOP_MARKET
+    # Método 3: Usar reduceOnly=True con quantity
     try:
-        log_consola("📝 Método 3: Intentando TP como LIMIT y SL como STOP_MARKET...")
-        # TP como LIMIT (más confiable que TAKE_PROFIT_MARKET)
+        log_consola("📝 Método 3: Intentando con reduceOnly=True y quantity...")
         tp_order = api_call_with_retry(client.futures_create_order,
             symbol=symbol,
             side=side,
-            type='LIMIT',
-            timeInForce='GTC',
-            price=tp_price_rounded,
+            type='TAKE_PROFIT_MARKET',
+            stopPrice=tp_price_rounded,
             quantity=quantity_rounded,
             reduceOnly=True
         )
-        log_consola(f"✅ Orden TP (LIMIT) creada (Método 3): {tp_price_rounded:.4f}")
+        log_consola(f"✅ Orden TP creada (Método 3): {tp_price_rounded:.4f}")
         
         sl_order = api_call_with_retry(client.futures_create_order,
             symbol=symbol,
@@ -1182,14 +1190,54 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
         try:
             ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
             for orden in ordenes:
+                if orden['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET']:
+                    api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
+        except Exception:
+            pass
+    
+    # Método 4: Crear TP como LIMIT y SL como STOP_MARKET
+    try:
+        log_consola("📝 Método 4: Intentando TP como LIMIT y SL como STOP_MARKET...")
+        # TP como LIMIT (más confiable que TAKE_PROFIT_MARKET)
+        tp_order = api_call_with_retry(client.futures_create_order,
+            symbol=symbol,
+            side=side,
+            type='LIMIT',
+            timeInForce='GTC',
+            price=tp_price_rounded,
+            quantity=quantity_rounded,
+            reduceOnly=True
+        )
+        log_consola(f"✅ Orden TP (LIMIT) creada (Método 4): {tp_price_rounded:.4f}")
+        
+        sl_order = api_call_with_retry(client.futures_create_order,
+            symbol=symbol,
+            side=side,
+            type='STOP_MARKET',
+            stopPrice=sl_price_rounded,
+            quantity=quantity_rounded,
+            reduceOnly=True
+        )
+        log_consola(f"✅ Orden SL creada (Método 4): {sl_price_rounded:.4f}")
+        log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 4)")
+        alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
+        return True
+    except Exception as e:
+        err = f"Método 4: {str(e)}"
+        errores_tp_sl.append(err)
+        log_consola(f"⚠️ {err}")
+        # Limpiar si se creó alguna orden
+        try:
+            ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
+            for orden in ordenes:
                 if orden['type'] in ['LIMIT', 'TAKE_PROFIT_MARKET', 'STOP_MARKET']:
                     api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
         except Exception:
             pass
     
-    # Método 4: Crear solo SL primero, luego TP
+    # Método 5: Crear solo SL primero, luego TP
     try:
-        log_consola("📝 Método 4: Creando SL primero, luego TP...")
+        log_consola("📝 Método 5: Creando SL primero, luego TP...")
         sl_order = api_call_with_retry(client.futures_create_order,
             symbol=symbol,
             side=side,
@@ -1197,7 +1245,7 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
             stopPrice=sl_price_rounded,
             closePosition=True
         )
-        log_consola(f"✅ Orden SL creada (Método 4): {sl_price_rounded:.4f}")
+        log_consola(f"✅ Orden SL creada (Método 5): {sl_price_rounded:.4f}")
         
         time.sleep(1)  # Pequeña pausa entre órdenes
         
@@ -1208,12 +1256,12 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
             stopPrice=tp_price_rounded,
             closePosition=True
         )
-        log_consola(f"✅ Orden TP creada (Método 4): {tp_price_rounded:.4f}")
-        log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 4)")
+        log_consola(f"✅ Orden TP creada (Método 5): {tp_price_rounded:.4f}")
+        log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 5)")
         alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
         return True
     except Exception as e:
-        err = f"Método 4: {str(e)}"
+        err = f"Método 5: {str(e)}"
         errores_tp_sl.append(err)
         log_consola(f"⚠️ {err}")
         # Limpiar si se creó alguna orden
@@ -1227,7 +1275,7 @@ def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
     
     log_consola(f"❌ Todos los métodos fallaron para crear órdenes TP/SL")
     try:
-        enviar_telegram(f"🚨 Falla al crear TP/SL en {symbol} (métodos 1-4). Errores:\n" + "\n".join(errores_tp_sl))
+        enviar_telegram(f"🚨 Falla al crear TP/SL en {symbol} (métodos 2-5). Errores:\n" + "\n".join(errores_tp_sl))
     except Exception:
         pass
     return False
@@ -1257,22 +1305,44 @@ def verificar_estado_posicion(symbol):
             alerta_sin_tp_sl_enviada = False
             return True, "No hay posición abierta"
         
-        # Verificar que hay órdenes TP/SL
-        tiene_tp_sl = any(o['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET', 'TAKE_PROFIT', 'STOP'] 
-                         for o in ordenes)
-        
-        if not tiene_tp_sl:
+        # Verificar que hay órdenes de TP Y SL (ambos por separado)
+        tipos_tp = ('TAKE_PROFIT_MARKET', 'TAKE_PROFIT', 'LIMIT')
+        tipos_sl = ('STOP_MARKET', 'STOP')
+
+        side_cierre = 'SELL' if float(posicion[0]['positionAmt']) > 0 else 'BUY'
+
+        tp_orders = [
+            o for o in ordenes
+            if o.get('type') in tipos_tp and o.get('side') == side_cierre
+            and (o.get('reduceOnly') or o.get('closePosition'))
+        ]
+        sl_orders = [
+            o for o in ordenes
+            if o.get('type') in tipos_sl and o.get('side') == side_cierre
+            and (o.get('reduceOnly') or o.get('closePosition'))
+        ]
+
+        tiene_tp = len(tp_orders) > 0
+        tiene_sl = len(sl_orders) > 0
+
+        if not tiene_tp or not tiene_sl:
+            faltantes = []
+            if not tiene_tp:
+                faltantes.append("TP")
+            if not tiene_sl:
+                faltantes.append("SL")
+            detalle = ", ".join(faltantes)
             # Enviar alerta solo si no ha sido enviada aún
             if not alerta_sin_tp_sl_enviada:
-                mensaje = f"🚨 ALERTA: {symbol} tiene posición abierta sin órdenes TP/SL activas"
+                mensaje = f"🚨 ALERTA: {symbol} tiene posición abierta sin orden {detalle}"
                 log_consola(mensaje)
                 enviar_telegram(mensaje)
                 alerta_sin_tp_sl_enviada = True
-            return False, "Posición sin protección TP/SL"
+            return False, f"Posición sin {detalle}"
         else:
-            # Si se detectan órdenes TP/SL, resetear el flag para la próxima alerta
+            # Si se detectan AMBAS órdenes TP/SL, resetear el flag para la próxima alerta
             alerta_sin_tp_sl_enviada = False
-        
+
         return True, "OK"
         
     except Exception as e:
@@ -1306,46 +1376,70 @@ def actualizar_trailing_stop(symbol, precio_entrada, senal, precio_actual, sl_ac
 
 def aplicar_trailing_stop(symbol, datos_operacion):
     """Aplica trailing stop loss a una posición abierta."""
+    if modo_papel:
+        return False
     try:
         precio_actual = float(api_call_with_retry(client.futures_symbol_ticker, symbol=symbol)['price'])
         precio_entrada = datos_operacion['precio_entrada']
         senal = datos_operacion['senal']
         sl_actual = datos_operacion['sl']
+        tp_actual = datos_operacion.get('tp')
         cantidad = datos_operacion['cantidad_real']
-        
+
         nuevo_sl, debe_actualizar = actualizar_trailing_stop(
             symbol, precio_entrada, senal, precio_actual, sl_actual
         )
-        
+
         if not debe_actualizar:
             return False
-        
-        # Cancelar orden SL actual y crear nueva
-        ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
-        for orden in ordenes:
-            if orden['type'] in ['STOP_MARKET', 'STOP']:
-                try:
-                    api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
-                except:
-                    pass
-        
+
         side_oco = 'SELL' if senal == 'long' else 'BUY'
         cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
         nuevo_sl_rounded = round(nuevo_sl, precio_decimales)
-        
-        api_call_with_retry(client.futures_create_order,
-            symbol=symbol,
-            side=side_oco,
-            type='STOP_MARKET',
-            stopPrice=nuevo_sl_rounded,
-            quantity=round(cantidad, cantidad_decimales),
-            reduceOnly=True
-        )
-        
+
+        # Cancelar TODAS las órdenes TP/SL existentes (evita TP huérfano cuando se actualiza SL)
+        try:
+            ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
+            for orden in ordenes:
+                if orden['type'] in ['STOP_MARKET', 'STOP', 'TAKE_PROFIT_MARKET', 'TAKE_PROFIT', 'LIMIT']:
+                    try:
+                        api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
+                    except Exception:
+                        pass
+        except Exception as e:
+            log_consola(f"⚠️ Error cancelando órdenes previas en trailing: {e}")
+
+        # Recrear AMBAS órdenes (TP + nuevo SL) usando los métodos robustos existentes
+        if tp_actual is not None:
+            tp_rounded = round(tp_actual, precio_decimales)
+            ordenes_ok = crear_ordenes_tp_sl_separadas(
+                symbol, side_oco, cantidad, tp_rounded, nuevo_sl_rounded
+            )
+            if not ordenes_ok:
+                log_consola("❌ No se pudieron recrear TP/SL tras trailing. Posición sin protección.")
+                enviar_telegram(
+                    f"🚨 Trailing Stop {symbol}: Fallo recreando TP/SL.\n"
+                    f"Nuevo SL objetivo: {nuevo_sl_rounded:.4f}\nRevisa manualmente."
+                )
+                return False
+        else:
+            # Sin TP conocido: crear solo el SL como respaldo
+            try:
+                api_call_with_retry(client.futures_create_order,
+                    symbol=symbol,
+                    side=side_oco,
+                    type='STOP_MARKET',
+                    stopPrice=nuevo_sl_rounded,
+                    closePosition=True
+                )
+            except Exception as e:
+                log_consola(f"❌ Error creando SL en trailing: {e}")
+                return False
+
         datos_operacion['sl'] = nuevo_sl_rounded
         enviar_telegram(f"📈 Trailing Stop actualizado en {symbol}: SL={nuevo_sl_rounded:.4f}")
         return True
-            
+
     except Exception as e:
         log_consola(f"❌ Error aplicando trailing stop: {e}")
         return False
@@ -1671,29 +1765,44 @@ def ejecutar_bot_trading():
                     else:
                         pnl = (precio_entrada - precio_actual) * cantidad
                     precio_ejecucion = precio_actual
-                    
-                    if pnl > 0:
-                        resultado = "TP"
+
+                    # Determinar resultado por proximidad real al TP/SL (no por signo del PnL)
+                    tolerancia = max(abs(precio_entrada) * 0.002, abs(tp - sl) * 0.1)
+                    if senal_original == 'long':
+                        if precio_actual >= tp - tolerancia:
+                            resultado = "TP"
+                        elif precio_actual <= sl + tolerancia:
+                            resultado = "SL"
+                        else:
+                            resultado = "CERRADO"
+                    else:
+                        if precio_actual <= tp + tolerancia:
+                            resultado = "TP"
+                        elif precio_actual >= sl - tolerancia:
+                            resultado = "SL"
+                        else:
+                            resultado = "CERRADO"
+
+                    if resultado == "TP":
                         mensaje = f"🎉 **Take Profit alcanzado en {symbol}** (aproximado)\n"
                         mensaje += f"💰 Ganancia aproximada: {pnl:.4f} USDT\n"
                         mensaje += f"📊 Precio entrada: {precio_entrada:.4f}\n"
                         mensaje += f"📊 Precio actual: {precio_ejecucion:.4f}"
                         enviar_telegram(mensaje)
-                    elif pnl < 0:
-                        resultado = "SL"
+                    elif resultado == "SL":
                         mensaje = f"⚠️ **Stop Loss alcanzado en {symbol}** (aproximado)\n"
                         mensaje += f"📉 Pérdida aproximada: {pnl:.4f} USDT\n"
                         mensaje += f"📊 Precio entrada: {precio_entrada:.4f}\n"
                         mensaje += f"📊 Precio actual: {precio_ejecucion:.4f}"
                         enviar_telegram(mensaje)
                     else:
-                        resultado = "NEUTRAL"
-                        mensaje = f"🔔 **Posición cerrada en {symbol}** (aproximado)\n"
+                        mensaje = f"🔔 **Posición cerrada en {symbol}** (motivo desconocido)\n"
                         mensaje += f"📊 PnL aproximado: {pnl:.4f} USDT\n"
                         mensaje += f"📊 Precio entrada: {precio_entrada:.4f}\n"
-                        mensaje += f"📊 Precio actual: {precio_ejecucion:.4f}"
+                        mensaje += f"📊 Precio actual: {precio_ejecucion:.4f}\n"
+                        mensaje += f"🎯 TP: {tp:.4f} | 🛑 SL: {sl:.4f}"
                         enviar_telegram(mensaje)
-                    log_consola(f"⚠️ No se encontró trade de cierre, PnL calculado: {pnl:.4f}")
+                    log_consola(f"⚠️ No se encontró trade de cierre, resultado={resultado}, PnL calculado: {pnl:.4f}")
 
                 if resultado == "SL":
                     perdidas_consecutivas += 1
