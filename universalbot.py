@@ -238,7 +238,7 @@ def procesar_comando_telegram(comando):
                 f"• Volumen Filtro: {'ON' if usar_volumen_filtro else 'OFF'} ({volumen_periodos} períodos)\n"
                 f"• Multi-Timeframe: {'ON' if usar_multitimeframe else 'OFF'} ({timeframe_superior})\n"
                 f"• Trailing Stop: {'ON' if usar_trailing_stop else 'OFF'} ({trailing_stop_pct}%)\n"
-                "v20.04.26 ")
+                "v06.06.26 ")
 
     elif comando == "configurar":
         return (
