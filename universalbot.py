@@ -12,6 +12,8 @@ import sys
 import threading
 import queue
 import json
+import hashlib
+import hmac
 from requests.exceptions import ConnectionError, Timeout
 
 # Intentar cargar python-dotenv si está disponible
@@ -238,7 +240,7 @@ def procesar_comando_telegram(comando):
                 f"• Volumen Filtro: {'ON' if usar_volumen_filtro else 'OFF'} ({volumen_periodos} períodos)\n"
                 f"• Multi-Timeframe: {'ON' if usar_multitimeframe else 'OFF'} ({timeframe_superior})\n"
                 f"• Trailing Stop: {'ON' if usar_trailing_stop else 'OFF'} ({trailing_stop_pct}%)\n"
-                "v06.06.26 ")
+                "v09.06.26 ")
 
     elif comando == "configurar":
         return (
@@ -1073,209 +1075,116 @@ def validar_distancia_minima(symbol, precio_entrada, precio_objetivo, tipo='TP')
         log_consola(f"⚠️ Error validando distancia mínima: {e}")
         return True, precio_objetivo  # Si falla la validación, continuar con el precio original
 
+def _crear_orden_algo(symbol, side, quantity, stop_price, order_type):
+    """Crea una orden Algo (TAKE_PROFIT/STOP_LOSS) en Binance Futures vía API"""
+    _, precio_decimales = obtener_precisiones(symbol)
+    stop_price_rounded = round(stop_price, precio_decimales)
+
+    params = {
+        'symbol': symbol,
+        'side': side,
+        'quantity': str(quantity),
+        'type': order_type,
+        'stopPrice': str(stop_price_rounded),
+        'timestamp': str(int(time.time() * 1000)),
+    }
+
+    query_string = '&'.join([f"{k}={params[k]}" for k in sorted(params.keys())])
+    signature = hmac.new(api_secret.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
+    params['signature'] = signature
+
+    headers = {'X-MBX-APIKEY': api_key}
+    url = f"{client.API_URL}/v1/algo/order"
+
+    response = requests.post(url, headers=headers, data=params)
+    data = response.json()
+
+    if response.status_code == 200 and data.get('code') == 0:
+        log_consola(f"✅ Orden Algo {order_type} creada: {stop_price_rounded:.{precio_decimales}f}")
+        return data
+    else:
+        raise Exception(f"APIError(code={data.get('code', '?')}): {data.get('msg', str(data))}")
+
 def crear_orden_oco(symbol, side, quantity, tp_price, sl_price):
     """
-    Crea una orden OCO (One Cancels Other) para Take Profit y Stop Loss.
+    Crea órdenes TP y SL usando la Algo Order API de Binance.
     """
     try:
         cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
         tp_price_rounded = round(tp_price, precio_decimales)
         sl_price_rounded = round(sl_price, precio_decimales)
         quantity_rounded = round(quantity, cantidad_decimales)
-        
-        log_consola(f"🔧 Intentando crear OCO: TP={tp_price_rounded:.{precio_decimales}f}, SL={sl_price_rounded:.{precio_decimales}f}, Quantity={quantity_rounded:.{cantidad_decimales}f}")
-        
-        order = api_call_with_retry(client.futures_create_oco_order,
-            symbol=symbol,
-            side=side,  # 'SELL' para long, 'BUY' para short
-            quantity=quantity_rounded,
-            price=tp_price_rounded,  # TP price
-            stopPrice=sl_price_rounded,  # SL price
-            stopLimitPrice=sl_price_rounded,  # SL limit price
-            stopLimitTimeInForce='GTC'
-        )
-        log_consola(f"✅ Orden OCO creada exitosamente: TP={tp_price_rounded:.4f}, SL={sl_price_rounded:.4f}")
-        return order
+
+        log_consola(f"🔧 Creando órdenes Algo: TP={tp_price_rounded:.{precio_decimales}f}, SL={sl_price_rounded:.{precio_decimales}f}, Qty={quantity_rounded:.{cantidad_decimales}f}")
+
+        _crear_orden_algo(symbol, side, quantity_rounded, tp_price_rounded, 'TAKE_PROFIT')
+        time.sleep(0.3)
+        _crear_orden_algo(symbol, side, quantity_rounded, sl_price_rounded, 'STOP_LOSS')
+
+        log_consola(f"✅ Órdenes TP/SL creadas exitosamente")
+        return True
     except Exception as e:
-        error_msg = str(e)
-        log_consola(f"❌ Error creando orden OCO: {error_msg}")
-        log_consola(f"   Detalles: symbol={symbol}, side={side}, quantity={quantity}, tp={tp_price}, sl={sl_price}")
+        log_consola(f"❌ Error creando órdenes Algo: {e}")
         try:
-            enviar_telegram(f"🚨 Error OCO TP/SL en {symbol}: {error_msg}\nside={side}, cantidad={quantity}, tp={tp_price}, sl={sl_price}")
+            enviar_telegram(f"🚨 Error TP/SL en {symbol}: {e}")
+        except Exception:
+            pass
+        try:
+            ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
+            for orden in ordenes:
+                if orden.get('type') in ('TAKE_PROFIT', 'STOP_LOSS', 'TAKE_PROFIT_MARKET', 'STOP_MARKET'):
+                    api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
         except Exception:
             pass
         return None
 
 def crear_ordenes_tp_sl_separadas(symbol, side, quantity, tp_price, sl_price):
     """
-    Crea órdenes TP y SL separadas usando múltiples métodos alternativos.
-    Intenta diferentes métodos hasta que uno funcione.
+    Crea órdenes TP y SL separadas usando la Algo Order API de Binance Futures.
     Retorna True si ambas órdenes se crearon correctamente, False en caso contrario.
     """
     global alerta_sin_tp_sl_enviada
-    errores_tp_sl = []
     cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
     tp_price_rounded = round(tp_price, precio_decimales)
     sl_price_rounded = round(sl_price, precio_decimales)
     quantity_rounded = round(quantity, cantidad_decimales)
-    
-    log_consola(f"🔧 Intentando crear órdenes TP/SL separadas: TP={tp_price_rounded:.{precio_decimales}f}, SL={sl_price_rounded:.{precio_decimales}f}, Quantity={quantity_rounded:.{cantidad_decimales}f}")
-    
-    # Método 2: Usar closePosition=True (sin quantity) - Más confiable
+
+    log_consola(f"🔧 Creando órdenes Algo TP/SL: TP={tp_price_rounded:.{precio_decimales}f}, SL={sl_price_rounded:.{precio_decimales}f}, Qty={quantity_rounded:.{cantidad_decimales}f}")
+
+    orden_creada_tp = False
+    orden_creada_sl = False
+
     try:
-        log_consola("📝 Método 2: Intentando con closePosition=True...")
-        tp_order = api_call_with_retry(client.futures_create_order,
-            symbol=symbol,
-            side=side,
-            type='TAKE_PROFIT_MARKET',
-            stopPrice=tp_price_rounded,
-            closePosition=True
-        )
-        log_consola(f"✅ Orden TP creada (Método 2): {tp_price_rounded:.4f}")
-        
-        sl_order = api_call_with_retry(client.futures_create_order,
-            symbol=symbol,
-            side=side,
-            type='STOP_MARKET',
-            stopPrice=sl_price_rounded,
-            closePosition=True
-        )
-        log_consola(f"✅ Orden SL creada (Método 2): {sl_price_rounded:.4f}")
-        log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 2)")
-        alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
-        return True
+        _crear_orden_algo(symbol, side, quantity_rounded, tp_price_rounded, 'TAKE_PROFIT')
+        orden_creada_tp = True
+        log_consola(f"✅ Orden TP (Algo) creada: {tp_price_rounded:.{precio_decimales}f}")
     except Exception as e:
-        err = f"Método 2: {str(e)}"
-        errores_tp_sl.append(err)
-        log_consola(f"⚠️ {err}")
-        # Limpiar si se creó alguna orden
-        try:
-            ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
-            for orden in ordenes:
-                if orden['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET']:
-                    api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
-        except Exception:
-            pass
-    
-    # Método 3: Usar reduceOnly=True con quantity
+        log_consola(f"⚠️ Error creando TP (Algo): {e}")
+
     try:
-        log_consola("📝 Método 3: Intentando con reduceOnly=True y quantity...")
-        tp_order = api_call_with_retry(client.futures_create_order,
-            symbol=symbol,
-            side=side,
-            type='TAKE_PROFIT_MARKET',
-            stopPrice=tp_price_rounded,
-            quantity=quantity_rounded,
-            reduceOnly=True
-        )
-        log_consola(f"✅ Orden TP creada (Método 3): {tp_price_rounded:.4f}")
-        
-        sl_order = api_call_with_retry(client.futures_create_order,
-            symbol=symbol,
-            side=side,
-            type='STOP_MARKET',
-            stopPrice=sl_price_rounded,
-            quantity=quantity_rounded,
-            reduceOnly=True
-        )
-        log_consola(f"✅ Orden SL creada (Método 3): {sl_price_rounded:.4f}")
-        log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 3)")
-        alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
-        return True
+        _crear_orden_algo(symbol, side, quantity_rounded, sl_price_rounded, 'STOP_LOSS')
+        orden_creada_sl = True
+        log_consola(f"✅ Orden SL (Algo) creada: {sl_price_rounded:.{precio_decimales}f}")
     except Exception as e:
-        err = f"Método 3: {str(e)}"
-        errores_tp_sl.append(err)
-        log_consola(f"⚠️ {err}")
-        # Limpiar si se creó alguna orden
-        try:
-            ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
-            for orden in ordenes:
-                if orden['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET']:
-                    api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
-        except Exception:
-            pass
-    
-    # Método 4: Crear TP como LIMIT y SL como STOP_MARKET
-    try:
-        log_consola("📝 Método 4: Intentando TP como LIMIT y SL como STOP_MARKET...")
-        # TP como LIMIT (más confiable que TAKE_PROFIT_MARKET)
-        tp_order = api_call_with_retry(client.futures_create_order,
-            symbol=symbol,
-            side=side,
-            type='LIMIT',
-            timeInForce='GTC',
-            price=tp_price_rounded,
-            quantity=quantity_rounded,
-            reduceOnly=True
-        )
-        log_consola(f"✅ Orden TP (LIMIT) creada (Método 4): {tp_price_rounded:.4f}")
-        
-        sl_order = api_call_with_retry(client.futures_create_order,
-            symbol=symbol,
-            side=side,
-            type='STOP_MARKET',
-            stopPrice=sl_price_rounded,
-            quantity=quantity_rounded,
-            reduceOnly=True
-        )
-        log_consola(f"✅ Orden SL creada (Método 4): {sl_price_rounded:.4f}")
-        log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 4)")
-        alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
+        log_consola(f"⚠️ Error creando SL (Algo): {e}")
+
+    if orden_creada_tp and orden_creada_sl:
+        log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente")
+        alerta_sin_tp_sl_enviada = False
         return True
-    except Exception as e:
-        err = f"Método 4: {str(e)}"
-        errores_tp_sl.append(err)
-        log_consola(f"⚠️ {err}")
-        # Limpiar si se creó alguna orden
-        try:
-            ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
-            for orden in ordenes:
-                if orden['type'] in ['LIMIT', 'TAKE_PROFIT_MARKET', 'STOP_MARKET']:
-                    api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
-        except Exception:
-            pass
-    
-    # Método 5: Crear solo SL primero, luego TP
+
+    # Si una falló, cancelar la que se creó (para evitar orden huérfana)
     try:
-        log_consola("📝 Método 5: Creando SL primero, luego TP...")
-        sl_order = api_call_with_retry(client.futures_create_order,
-            symbol=symbol,
-            side=side,
-            type='STOP_MARKET',
-            stopPrice=sl_price_rounded,
-            closePosition=True
-        )
-        log_consola(f"✅ Orden SL creada (Método 5): {sl_price_rounded:.4f}")
-        
-        time.sleep(1)  # Pequeña pausa entre órdenes
-        
-        tp_order = api_call_with_retry(client.futures_create_order,
-            symbol=symbol,
-            side=side,
-            type='TAKE_PROFIT_MARKET',
-            stopPrice=tp_price_rounded,
-            closePosition=True
-        )
-        log_consola(f"✅ Orden TP creada (Método 5): {tp_price_rounded:.4f}")
-        log_consola(f"✅ Ambas órdenes TP/SL creadas correctamente (Método 5)")
-        alerta_sin_tp_sl_enviada = False  # Resetear flag de alerta
-        return True
-    except Exception as e:
-        err = f"Método 5: {str(e)}"
-        errores_tp_sl.append(err)
-        log_consola(f"⚠️ {err}")
-        # Limpiar si se creó alguna orden
-        try:
-            ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
-            for orden in ordenes:
-                if orden['type'] in ['TAKE_PROFIT_MARKET', 'STOP_MARKET']:
-                    api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
-        except Exception:
-            pass
-    
-    log_consola(f"❌ Todos los métodos fallaron para crear órdenes TP/SL")
+        ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
+        for orden in ordenes:
+            if orden.get('type') in ('TAKE_PROFIT', 'STOP_LOSS', 'TAKE_PROFIT_MARKET', 'STOP_MARKET'):
+                api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
+    except Exception:
+        pass
+
+    log_consola(f"❌ Fallo al crear órdenes TP/SL")
     try:
-        enviar_telegram(f"🚨 Falla al crear TP/SL en {symbol} (métodos 2-5). Errores:\n" + "\n".join(errores_tp_sl))
+        enviar_telegram(f"🚨 Falla al crear TP/SL en {symbol}.")
     except Exception:
         pass
     return False
@@ -1653,8 +1562,6 @@ def ejecutar_bot_trading():
     ultimo_tp = None
     ultimo_sl = None
     perdidas_consecutivas = 0  # Al inicio de ejecutar_bot_trading
-    drawdown_actual = 0.0  # Drawdown actual
-    saldo_inicial = None  # Saldo inicial para calcular drawdown
     ultimo_health_check = time.time()
     ultimo_trailing_check = time.time()
 
@@ -1903,26 +1810,9 @@ def ejecutar_bot_trading():
                 balance = api_call_with_retry(client.futures_account_balance)
                 saldo_usdt = next((float(b['balance']) for b in balance if b['asset'] == 'USDT'), 0)
 
-                # Establecer saldo inicial si no está establecido
-                if saldo_inicial is None:
-                    saldo_inicial = saldo_usdt
-                    log_consola(f"Saldo inicial establecido: {saldo_inicial} USDT")
-
-                # Calcular drawdown actual
-                drawdown_actual = (saldo_inicial - saldo_usdt) / saldo_inicial if saldo_inicial > 0 else 0
-
                 precio_actual = float(df['close'].iloc[-1])
 
-                # Riesgo dinámico basado en drawdown
-                riesgo_actual = riesgo_pct * max(0, 1 - drawdown_actual / drawdown_max_pct)
-                if drawdown_actual > 0:
-                    log_consola(f"Riesgo dinámico ajustado a {riesgo_actual*100:.2f}% por drawdown actual de {drawdown_actual*100:.2f}%")
-
-                # Ajuste adicional por volatilidad: riesgo inversamente proporcional a ATR
-                if atr > 0:
-                    factor_volatilidad = min(2.0, max(0.5, umbral_volatilidad / atr))
-                    riesgo_actual *= factor_volatilidad
-                    log_consola(f"Riesgo ajustado por volatilidad: factor {factor_volatilidad:.2f} (ATR={atr:.6f}), riesgo final {riesgo_actual*100:.2f}%")
+                riesgo_actual = riesgo_pct
 
                 if senal == 'long':
                     sl = precio_actual - atr * sl_multiplier
