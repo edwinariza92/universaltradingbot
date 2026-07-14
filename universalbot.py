@@ -1075,35 +1075,68 @@ def validar_distancia_minima(symbol, precio_entrada, precio_objetivo, tipo='TP')
         log_consola(f"⚠️ Error validando distancia mínima: {e}")
         return True, precio_objetivo  # Si falla la validación, continuar con el precio original
 
-def _crear_orden_algo(symbol, side, quantity, stop_price, order_type):
-    """Crea una orden Algo (TAKE_PROFIT/STOP_LOSS) en Binance Futures vía API"""
+def _build_tp_sl_order_params(symbol, side, quantity, stop_price, order_type):
+    """Construye parámetros compatibles con Binance Futures para TP/SL de cierre de posición."""
     _, precio_decimales = obtener_precisiones(symbol)
-    stop_price_rounded = round(stop_price, precio_decimales)
+    stop_price_rounded = round(float(stop_price), precio_decimales)
 
-    params = {
+    side_upper = side.upper()
+    if order_type == 'TAKE_PROFIT':
+        order_type_binance = 'TAKE_PROFIT_MARKET'
+    elif order_type == 'STOP_LOSS':
+        order_type_binance = 'STOP_MARKET'
+    else:
+        order_type_binance = order_type
+
+    return {
         'symbol': symbol,
-        'side': side,
+        'side': side_upper,
+        'type': order_type_binance,
         'quantity': str(quantity),
-        'type': order_type,
         'stopPrice': str(stop_price_rounded),
-        'timestamp': str(int(time.time() * 1000)),
+        'reduceOnly': True,
+        'closePosition': True,
+        'positionSide': 'LONG' if side_upper == 'SELL' else 'SHORT',
+        'timeInForce': 'GTC',
     }
 
-    query_string = '&'.join([f"{k}={params[k]}" for k in sorted(params.keys())])
-    signature = hmac.new(api_secret.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
-    params['signature'] = signature
 
-    headers = {'X-MBX-APIKEY': api_key}
-    url = f"{client.API_URL}/v1/algo/order"
+def _crear_orden_algo(symbol, side, quantity, stop_price, order_type):
+    """Crea una orden TP/SL en Binance Futures mediante órdenes de cierre de posición."""
+    params = _build_tp_sl_order_params(symbol, side, quantity, stop_price, order_type)
+    _, precio_decimales = obtener_precisiones(symbol)
+    stop_price_rounded = round(float(stop_price), precio_decimales)
 
-    response = requests.post(url, headers=headers, data=params)
-    data = response.json()
-
-    if response.status_code == 200 and data.get('code') == 0:
-        log_consola(f"✅ Orden Algo {order_type} creada: {stop_price_rounded:.{precio_decimales}f}")
-        return data
-    else:
-        raise Exception(f"APIError(code={data.get('code', '?')}): {data.get('msg', str(data))}")
+    try:
+        response = api_call_with_retry(client.futures_create_order, **params)
+        if response and response.get('orderId'):
+            log_consola(f"✅ Orden {order_type} creada: {stop_price_rounded:.{precio_decimales}f}")
+            return response
+        raise Exception(f"Respuesta inesperada de Binance: {response}")
+    except Exception as e:
+        # Fallback a la API algo legacy si la llamada directa falla por compatibilidad
+        try:
+            legacy_params = {
+                'symbol': symbol,
+                'side': side,
+                'quantity': str(quantity),
+                'type': order_type,
+                'stopPrice': str(stop_price_rounded),
+                'timestamp': str(int(time.time() * 1000)),
+            }
+            query_string = '&'.join([f"{k}={legacy_params[k]}" for k in sorted(legacy_params.keys())])
+            signature = hmac.new(api_secret.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
+            legacy_params['signature'] = signature
+            headers = {'X-MBX-APIKEY': api_key}
+            url = f"{client.API_URL}/v1/algo/order"
+            response = requests.post(url, headers=headers, data=legacy_params)
+            data = response.json()
+            if response.status_code == 200 and data.get('code') == 0:
+                log_consola(f"✅ Orden Algo {order_type} creada: {stop_price_rounded:.{precio_decimales}f}")
+                return data
+            raise Exception(f"APIError(code={data.get('code', '?')}): {data.get('msg', str(data))}")
+        except Exception as fallback_error:
+            raise Exception(f"{e} | fallback={fallback_error}")
 
 def crear_orden_oco(symbol, side, quantity, tp_price, sl_price):
     """
