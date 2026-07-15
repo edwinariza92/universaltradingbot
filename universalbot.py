@@ -28,25 +28,25 @@ except ImportError:
 # Cargar desde variables de entorno, con valores por defecto como fallback
 api_key = os.getenv('BINANCE_API_KEY', 'Lw3sQdyAZcEJ2s522igX6E28ZL629ZL5JJ9UaqLyM7PXeNRLDu30LmPYFNJ4ixAx')
 api_secret = os.getenv('BINANCE_API_SECRET', 'Adw4DXL2BI9oS4sCJlS3dlBeoJQo6iPezmykfL1bhhm0NQe7aTHpaWULLQ0dYOIt')
-symbol = os.getenv('SYMBOL', 'DOGEUSDT')
-intervalo = os.getenv('INTERVALO', '30m')
-riesgo_pct = float(os.getenv('RIESGO_PCT', '0.01'))  # 1% de riesgo por operación
+symbol = os.getenv('SYMBOL', 'ALLOUSDT')
+intervalo = os.getenv('INTERVALO', '15m')
+riesgo_pct = float(os.getenv('RIESGO_PCT', '0.03'))  # 1% de riesgo por operación
 
 # ==========================================
 # === PARÁMETROS DE INDICADORES (Sincronizados con PineScript) ===
 # ==========================================
 # Bandas de Bollinger
-bb_length = int(os.getenv('BB_LENGTH', '22'))  # BB Periodo
-bb_mult = float(os.getenv('BB_MULT', '3.3'))  # BB Desviación
+bb_length = int(os.getenv('BB_LENGTH', '19'))  # BB Periodo
+bb_mult = float(os.getenv('BB_MULT', '2.6'))  # BB Desviación
 
 # ATR (para TP/SL)
 atr_length = int(os.getenv('ATR_LENGTH', '3'))  # ATR Periodo
-tp_multiplier = float(os.getenv('TP_MULTIPLIER', '3.6'))  # Multiplicador TP (Profit)
-sl_multiplier = float(os.getenv('SL_MULTIPLIER', '1.6'))  # Multiplicador SL (Loss)
+tp_multiplier = float(os.getenv('TP_MULTIPLIER', '2.7'))  # Multiplicador TP (Profit)
+sl_multiplier = float(os.getenv('SL_MULTIPLIER', '1.2'))  # Multiplicador SL (Loss)
 umbral_volatilidad = float(os.getenv('UMBRAL_VOLATILIDAD', '0.02'))  # Umbral Volatilidad (ATR)
 
 # Filtro de tendencia (MA)
-ma_trend_length = int(os.getenv('MA_TREND_LENGTH', '50'))  # Periodo MA Tendencia
+ma_trend_length = int(os.getenv('MA_TREND_LENGTH', '20'))  # Periodo MA Tendencia
 usar_ma_trend = os.getenv('USAR_MA_TREND', 'True').lower() == 'true'  # Usar filtro MA de tendencia
 
 # RSI (Opcional)
@@ -56,27 +56,22 @@ rsi_overbought = int(os.getenv('RSI_OVERBOUGHT', '70'))  # RSI Sobrecompra
 rsi_oversold = int(os.getenv('RSI_OVERSOLD', '30'))  # RSI Sobreventa
 
 # MACD (Opcional)
-usar_macd = os.getenv('USAR_MACD', 'False').lower() == 'true'  # Usar Filtro MACD
-macd_fast = int(os.getenv('MACD_FAST', '12'))  # MACD Rápida
+usar_macd = os.getenv('USAR_MACD', 'True').lower() == 'true'  # Usar Filtro MACD
+macd_fast = int(os.getenv('MACD_FAST', '20'))  # MACD Rápida
 macd_slow = int(os.getenv('MACD_SLOW', '26'))  # MACD Lenta
-macd_signal = int(os.getenv('MACD_SIGNAL', '9'))  # MACD Señal
+macd_signal = int(os.getenv('MACD_SIGNAL', '20'))  # MACD Señal
 
 # Volumen (Opcional)
 usar_volumen_filtro = os.getenv('USAR_VOLUMEN_FILTRO', 'False').lower() == 'true'  # Usar Filtro de Volumen
 volumen_periodos = int(os.getenv('VOLUMEN_PERIODOS', '20'))  # Periodo Media Volumen
 
-# Multi-Timeframe (Opcional)
-usar_multitimeframe = os.getenv('USAR_MULTITIMEFRAME', 'False').lower() == 'true'  # Activar confirmación multi-timeframe
-timeframe_superior = os.getenv('TIMEFRAME_SUPERIOR', '1h')  # Timeframe superior para confirmación
+# Multi-Timeframe ya no se usa; siempre se permite la señal directa.
+usar_multitimeframe = False
 
 # ==========================================
 # === CONFIGURACIÓN DE GESTIÓN DE RIESGOS ===
 # ==========================================
-drawdown_max_pct = float(os.getenv('DRAWDOWN_MAX_PCT', '0.05'))  # Máximo drawdown permitido (5%)
-
-# Trailing Stop
-usar_trailing_stop = os.getenv('USAR_TRAILING_STOP', 'False').lower() == 'true'  # Activar trailing stop loss
-trailing_stop_pct = float(os.getenv('TRAILING_STOP_PCT', '0.5'))  # Porcentaje para trailing stop
+# El bot no aplica drawdown máximo ni trailing stop.
 
 # Health Check
 health_check_interval = int(os.getenv('HEALTH_CHECK_INTERVAL', '300'))  # Intervalo de health check en segundos (5 min)
@@ -189,10 +184,8 @@ def procesar_comando_telegram(comando):
     """Procesa comandos recibidos por Telegram"""
     global bot_activo, bot_thread, modo_papel
     global symbol, intervalo, riesgo_pct, bb_length, bb_mult, atr_length, ma_trend_length, umbral_volatilidad, tp_multiplier, sl_multiplier, usar_ma_trend
-    global drawdown_max_pct
     global usar_rsi, rsi_length, rsi_overbought, rsi_oversold, usar_macd, macd_fast, macd_slow, macd_signal
-    global usar_volumen_filtro, volumen_periodos, usar_multitimeframe, timeframe_superior
-    global usar_trailing_stop, trailing_stop_pct
+    global usar_volumen_filtro, volumen_periodos
     global saldo_papel, pnl_papel_total, operaciones_papel_count, posicion_papel
 
     comando = comando.lower().strip()
@@ -234,13 +227,10 @@ def procesar_comando_telegram(comando):
                 f"• MA Tendencia: {ma_trend_length} ({'ON' if usar_ma_trend else 'OFF'})\n"
                 f"• Umbral ATR: {umbral_volatilidad}\n"
                 f"• TP Mult: {tp_multiplier} | SL Mult: {sl_multiplier}\n"
-                f"• Drawdown Máx: {drawdown_max_pct*100:.1f}%\n"
                 f"• RSI: {'ON' if usar_rsi else 'OFF'} ({rsi_length}/{rsi_overbought}/{rsi_oversold})\n"
                 f"• MACD: {'ON' if usar_macd else 'OFF'} ({macd_fast}/{macd_slow}/{macd_signal})\n"
                 f"• Volumen Filtro: {'ON' if usar_volumen_filtro else 'OFF'} ({volumen_periodos} períodos)\n"
-                f"• Multi-Timeframe: {'ON' if usar_multitimeframe else 'OFF'} ({timeframe_superior})\n"
-                f"• Trailing Stop: {'ON' if usar_trailing_stop else 'OFF'} ({trailing_stop_pct}%)\n"
-                "v09.06.26 ")
+                "v14.07.26 ")
 
     elif comando == "configurar":
         return (
@@ -254,12 +244,9 @@ def procesar_comando_telegram(comando):
             f"• Periodo MA Tendencia: `{ma_trend_length}` ({'ON' if usar_ma_trend else 'OFF'})\n"
             f"• Umbral ATR: `{umbral_volatilidad}`\n"
             f"• TP Mult: `{tp_multiplier}` | SL Mult: `{sl_multiplier}`\n"
-            f"• Drawdown Máx: `{drawdown_max_pct*100:.1f}%`\n"
             f"• RSI: `{'ON' if usar_rsi else 'OFF'}` ({rsi_length}/{rsi_overbought}/{rsi_oversold})\n"
             f"• MACD: `{'ON' if usar_macd else 'OFF'}` ({macd_fast}/{macd_slow}/{macd_signal})\n"
-            f"• Volumen Filtro: `{'ON' if usar_volumen_filtro else 'OFF'}` ({volumen_periodos} períodos)\n"
-            f"• Multi-Timeframe: `{'ON' if usar_multitimeframe else 'OFF'}` ({timeframe_superior})\n"
-            f"• Trailing Stop: `{'ON' if usar_trailing_stop else 'OFF'}` ({trailing_stop_pct}%)\n\n"
+            f"• Volumen Filtro: `{'ON' if usar_volumen_filtro else 'OFF'}` ({volumen_periodos} períodos)\n\n"
             "Para cambiar un parámetro, escribe:\n"
             "`set parametro valor`\n"
             "Ejemplo: `set simbolo BTCUSDT`"
@@ -292,9 +279,6 @@ def procesar_comando_telegram(comando):
                 tp_multiplier = float(valor_raw)
             elif param == "sl":
                 sl_multiplier = float(valor_raw)
-            elif param == "drawdownmax":
-                drawdown_max_pct = float(valor_raw) / 100 if float(valor_raw) >= 1 else float(valor_raw)
-
             elif param == "rsi":
                 v = valor_raw.lower()
                 if v in ("1", "true", "on", "yes"):
@@ -333,29 +317,6 @@ def procesar_comando_telegram(comando):
                     return "❌ Valor para volumenfiltro no válido. Usa on/off o 1/0."
             elif param == "volumenperiodos":
                 volumen_periodos = int(valor_raw)
-            elif param == "multitimeframe":
-                v = valor_raw.lower()
-                if v in ("1", "true", "on", "yes"):
-                    usar_multitimeframe = True
-                elif v in ("0", "false", "off", "no"):
-                    usar_multitimeframe = False
-                else:
-                    return "❌ Valor para multitimeframe no válido. Usa on/off o 1/0."
-            elif param == "timeframesuperior":
-                timeframe_superior = valor_raw
-            elif param == "trailing":
-                v = valor_raw.lower()
-                if v in ("1", "true", "on", "yes"):
-                    usar_trailing_stop = True
-                elif v in ("0", "false", "off", "no"):
-                    usar_trailing_stop = False
-                else:
-                    return "❌ Valor para trailing no válido. Usa on/off o 1/0."
-            elif param == "trailingpct":
-                nuevo_pct = float(valor_raw)
-                if nuevo_pct <= 0 or nuevo_pct > 50:
-                    return "❌ trailingpct debe estar entre 0 y 50 (porcentaje)."
-                trailing_stop_pct = nuevo_pct
             else:
                 return "❌ Parámetro no reconocido."
             return f"✅ Parámetro `{param}` actualizado a `{valor_raw}`."
@@ -447,14 +408,6 @@ def procesar_comando_telegram(comando):
         operaciones_papel_count = 0
         return f"🔄 Modo papel reseteado.\n💰 Saldo inicial: ${saldo_inicial_papel:.2f}"
 
-    elif comando == "trailing_on":
-        usar_trailing_stop = True
-        return f"✅ Trailing Stop **ACTIVADO** ({trailing_stop_pct}%)\n⚠️ Solo afecta a operaciones en modo REAL."
-
-    elif comando == "trailing_off":
-        usar_trailing_stop = False
-        return "✅ Trailing Stop **DESACTIVADO**"
-
     else:
         return """🤖 **Comandos disponibles:**
 
@@ -481,10 +434,6 @@ def procesar_comando_telegram(comando):
 • `paper` o `papel` - Muestra resumen del modo papel
 • `papel_reset` - Resetea el saldo y operaciones del modo papel
 
-📈 **Trailing Stop:**
-• `trailing_on` - Activa el trailing stop (solo modo REAL)
-• `trailing_off` - Desactiva el trailing stop
-• `set trailingpct 1.5` - Cambia el porcentaje (ej: 1.5%)
 """
 
 def bot_telegram_control():
@@ -600,7 +549,7 @@ def calcular_senal(df, umbral=None):
     """
     global bb_length, bb_mult, atr_length, umbral_volatilidad, usar_ma_trend, ma_trend_length
     global usar_rsi, rsi_length, rsi_overbought, rsi_oversold, usar_macd, macd_fast, macd_slow, macd_signal
-    global usar_volumen_filtro, volumen_periodos, usar_multitimeframe, timeframe_superior, symbol, intervalo
+    global usar_volumen_filtro, volumen_periodos, symbol, intervalo
 
     if umbral is None:
         umbral = umbral_volatilidad
@@ -709,17 +658,8 @@ def calcular_senal(df, umbral=None):
         volume_avg = df['volume_avg'].iloc[-1]
         f_volumen = volume_now > volume_avg
 
-    # Filtro Multi-Timeframe (Opcional)
+    # Multi-Timeframe está inhabilitado por diseño
     f_multitimeframe = True
-    if usar_multitimeframe:
-        try:
-            df_superior = obtener_datos(symbol, timeframe_superior, limite=50)
-            if len(df_superior) >= 10:
-                senal_superior = calcular_senal(df_superior, umbral=umbral_volatilidad)
-                f_multitimeframe = senal_superior in ['long', 'short']
-        except Exception as e:
-            log_consola(f"⚠️ Error en multi-timeframe: {e}")
-            f_multitimeframe = True  # Si falla, permitir la señal
 
     # ==========================================
     # === CONDICIONES DE ENTRADA ===
@@ -1291,101 +1231,6 @@ def verificar_estado_posicion(symbol):
         log_consola(f"❌ Error en health check: {e}")
         return False, f"Error: {str(e)}"
 
-def actualizar_trailing_stop(symbol, precio_entrada, senal, precio_actual, sl_actual, porcentaje_trailing=None):
-    """
-    Actualiza el stop loss siguiendo el precio favorablemente (Trailing Stop).
-    Retorna (nuevo_sl, actualizado) donde actualizado es True si se actualizó.
-    """
-    if porcentaje_trailing is None:
-        porcentaje_trailing = trailing_stop_pct
-    
-    try:
-        if senal == 'long':
-            nuevo_sl = precio_actual * (1 - porcentaje_trailing / 100)
-            if nuevo_sl > sl_actual and nuevo_sl < precio_actual:
-                log_consola(f"📈 Trailing Stop: Actualizando SL de {sl_actual:.4f} a {nuevo_sl:.4f} (LONG)")
-                return nuevo_sl, True
-        else:  # short
-            nuevo_sl = precio_actual * (1 + porcentaje_trailing / 100)
-            if nuevo_sl < sl_actual and nuevo_sl > precio_actual:
-                log_consola(f"📉 Trailing Stop: Actualizando SL de {sl_actual:.4f} a {nuevo_sl:.4f} (SHORT)")
-                return nuevo_sl, True
-        
-        return sl_actual, False
-    except Exception as e:
-        log_consola(f"❌ Error en trailing stop: {e}")
-        return sl_actual, False
-
-def aplicar_trailing_stop(symbol, datos_operacion):
-    """Aplica trailing stop loss a una posición abierta."""
-    if modo_papel:
-        return False
-    try:
-        precio_actual = float(api_call_with_retry(client.futures_symbol_ticker, symbol=symbol)['price'])
-        precio_entrada = datos_operacion['precio_entrada']
-        senal = datos_operacion['senal']
-        sl_actual = datos_operacion['sl']
-        tp_actual = datos_operacion.get('tp')
-        cantidad = datos_operacion['cantidad_real']
-
-        nuevo_sl, debe_actualizar = actualizar_trailing_stop(
-            symbol, precio_entrada, senal, precio_actual, sl_actual
-        )
-
-        if not debe_actualizar:
-            return False
-
-        side_oco = 'SELL' if senal == 'long' else 'BUY'
-        cantidad_decimales, precio_decimales = obtener_precisiones(symbol)
-        nuevo_sl_rounded = round(nuevo_sl, precio_decimales)
-
-        # Cancelar TODAS las órdenes TP/SL existentes (evita TP huérfano cuando se actualiza SL)
-        try:
-            ordenes = api_call_with_retry(client.futures_get_open_orders, symbol=symbol)
-            for orden in ordenes:
-                if orden['type'] in ['STOP_MARKET', 'STOP', 'TAKE_PROFIT_MARKET', 'TAKE_PROFIT', 'LIMIT']:
-                    try:
-                        api_call_with_retry(client.futures_cancel_order, symbol=symbol, orderId=orden['orderId'])
-                    except Exception:
-                        pass
-        except Exception as e:
-            log_consola(f"⚠️ Error cancelando órdenes previas en trailing: {e}")
-
-        # Recrear AMBAS órdenes (TP + nuevo SL) usando los métodos robustos existentes
-        if tp_actual is not None:
-            tp_rounded = round(tp_actual, precio_decimales)
-            ordenes_ok = crear_ordenes_tp_sl_separadas(
-                symbol, side_oco, cantidad, tp_rounded, nuevo_sl_rounded
-            )
-            if not ordenes_ok:
-                log_consola("❌ No se pudieron recrear TP/SL tras trailing. Posición sin protección.")
-                enviar_telegram(
-                    f"🚨 Trailing Stop {symbol}: Fallo recreando TP/SL.\n"
-                    f"Nuevo SL objetivo: {nuevo_sl_rounded:.4f}\nRevisa manualmente."
-                )
-                return False
-        else:
-            # Sin TP conocido: crear solo el SL como respaldo
-            try:
-                api_call_with_retry(client.futures_create_order,
-                    symbol=symbol,
-                    side=side_oco,
-                    type='STOP_MARKET',
-                    stopPrice=nuevo_sl_rounded,
-                    closePosition=True
-                )
-            except Exception as e:
-                log_consola(f"❌ Error creando SL en trailing: {e}")
-                return False
-
-        datos_operacion['sl'] = nuevo_sl_rounded
-        enviar_telegram(f"📈 Trailing Stop actualizado en {symbol}: SL={nuevo_sl_rounded:.4f}")
-        return True
-
-    except Exception as e:
-        log_consola(f"❌ Error aplicando trailing stop: {e}")
-        return False
-
 def analizar_performance_tiempo_real():
     """Calcula métricas de performance en tiempo real."""
     archivo = 'registro_operaciones.csv'
@@ -1596,7 +1441,6 @@ def ejecutar_bot_trading():
     ultimo_sl = None
     perdidas_consecutivas = 0  # Al inicio de ejecutar_bot_trading
     ultimo_health_check = time.time()
-    ultimo_trailing_check = time.time()
 
     # Notificar inicio del bot
     enviar_telegram(f"🤖 **Bot {symbol} iniciado**\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n📊 Símbolo: {symbol}\n⏱️ Intervalo: {intervalo}")
@@ -2012,11 +1856,6 @@ def ejecutar_bot_trading():
                     log_consola(f"⚠️ Health Check falló: {mensaje}")
                 ultimo_health_check = tiempo_actual
             
-            # Trailing Stop (si está activo y hay posición abierta)
-            if usar_trailing_stop and datos_ultima_operacion and pos_abierta != 0:
-                if tiempo_actual - ultimo_trailing_check >= 60:  # Verificar cada minuto
-                    aplicar_trailing_stop(symbol, datos_ultima_operacion)
-                    ultimo_trailing_check = tiempo_actual
             
             # Actualizar posición en modo papel
             if modo_papel:
