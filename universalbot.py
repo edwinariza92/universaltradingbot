@@ -1028,17 +1028,21 @@ def _build_tp_sl_order_params(symbol, side, quantity, stop_price, order_type):
     else:
         order_type_binance = order_type
 
-    return {
+    params = {
         'symbol': symbol,
         'side': side_upper,
         'type': order_type_binance,
         'quantity': str(quantity),
         'stopPrice': str(stop_price_rounded),
-        'reduceOnly': True,
         'closePosition': True,
         'positionSide': 'LONG' if side_upper == 'SELL' else 'SHORT',
-        'timeInForce': 'GTC',
+        'workingType': 'MARK_PRICE',
     }
+
+    if order_type_binance in {'TAKE_PROFIT_MARKET', 'STOP_MARKET'}:
+        params.pop('quantity', None)
+
+    return params
 
 
 def _crear_orden_algo(symbol, side, quantity, stop_price, order_type):
