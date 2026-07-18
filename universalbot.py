@@ -62,7 +62,7 @@ macd_slow = int(os.getenv('MACD_SLOW', '26'))  # MACD Lenta
 macd_signal = int(os.getenv('MACD_SIGNAL', '20'))  # MACD Señal
 
 # Volumen (Opcional)
-usar_volumen_filtro = os.getenv('USAR_VOLUMEN_FILTRO', 'False').lower() == 'true'  # Usar Filtro de Volumen
+usar_volumen_filtro = os.getenv('USAR_VOLUMEN_FILTRO', 'True').lower() == 'true'  # Usar Filtro de Volumen
 volumen_periodos = int(os.getenv('VOLUMEN_PERIODOS', '20'))  # Periodo Media Volumen
 
 # Multi-Timeframe ya no se usa; siempre se permite la señal directa.
@@ -230,7 +230,7 @@ def procesar_comando_telegram(comando):
                 f"• RSI: {'ON' if usar_rsi else 'OFF'} ({rsi_length}/{rsi_overbought}/{rsi_oversold})\n"
                 f"• MACD: {'ON' if usar_macd else 'OFF'} ({macd_fast}/{macd_slow}/{macd_signal})\n"
                 f"• Volumen Filtro: {'ON' if usar_volumen_filtro else 'OFF'} ({volumen_periodos} períodos)\n"
-                "v14.07.26 ")
+                "v18.07.26 ")
 
     elif comando == "configurar":
         return (
